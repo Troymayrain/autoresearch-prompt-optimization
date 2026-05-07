@@ -11,9 +11,40 @@ from openpyxl import Workbook
 from optimizer.evaluation import EvaluationResult
 from optimizer.scoring import aggregate_scores
 
+SECRET_KEY_MARKERS = (
+    "secret",
+    "token",
+    "authorization",
+    "password",
+    "credential",
+    "salt",
+    "api_key",
+    "gateway_key",
+    "base64",
+    "raw_image",
+    "image_bytes",
+    "ssm_value",
+)
+
 
 def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _sanitize(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if _is_secret_key(key) else _sanitize(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize(item) for item in value]
+    return value
+
+
+def _is_secret_key(key: object) -> bool:
+    lowered = str(key).lower()
+    return any(marker in lowered for marker in SECRET_KEY_MARKERS)
 
 
 def _summary(phase: str, results: Sequence[EvaluationResult]) -> dict[str, object]:
@@ -75,10 +106,11 @@ def write_run_artifacts(
     optimizer_response: dict,
 ) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    _write_json(run_dir / "summary.json", _summary(phase, results))
-    _write_json(run_dir / "failure-clusters.json", _summary(phase, results)["failure_categories"])
-    _write_json(run_dir / "optimizer-request.json", optimizer_request)
-    _write_json(run_dir / "optimizer-response.json", optimizer_response)
+    summary = _summary(phase, results)
+    _write_json(run_dir / "summary.json", summary)
+    _write_json(run_dir / "failure-clusters.json", summary["failure_categories"])
+    _write_json(run_dir / "optimizer-request.json", _sanitize(optimizer_request))
+    _write_json(run_dir / "optimizer-response.json", _sanitize(optimizer_response))
     (run_dir / "prompt-before.js").write_text(prompt_before, encoding="utf-8")
     (run_dir / "prompt-after.js").write_text(prompt_after, encoding="utf-8")
     (run_dir / "prompt.diff").write_text(
