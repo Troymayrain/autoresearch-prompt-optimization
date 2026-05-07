@@ -1,100 +1,70 @@
-# Autoresearch for Prompt Optimization
+# Card OCR Prompt Optimizer
 
-Adapting [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) framework to **autonomous prompt engineering**. An AI agent iteratively optimizes a system prompt against a fixed evaluation set, using a git-based experiment loop with automatic keep/discard decisions.
+This repository runs a self-contained gift-card OCR prompt optimization loop.
+Python orchestrates dataset loading, OCR evaluation, scoring, reporting,
+optimizer LLM calls, and prompt keep/discard decisions. The vendored Node
+runtime in `ocr_runtime/` executes the ordinary `code-ocr` OCR path.
 
-**Result: 74.72% → 100% accuracy in 8 experiments, 0 human interventions.**
+Only `prompts/ocr.js` is allowed to change during an experiment. Scoring,
+dataset loading, OCR runtime code, and git control code stay fixed.
 
-![Progress Chart](progress.png)
-
-## How It Works
-
-The autoresearch loop treats prompt engineering like a research experiment:
-
-1. **Baseline** — Run the current prompt against 30 test examples, score all 180 fields
-2. **Analyze failures** — Read per-field results to identify what the model gets wrong
-3. **Hypothesize & edit** — Modify `prompt.txt` based on failure patterns
-4. **Evaluate** — Run the full eval suite, compare accuracy
-5. **Keep or discard** — If accuracy improved, `git commit`. If not, `git reset --hard HEAD~1`
-6. **Repeat** — Until a stop condition triggers (max iterations, plateau, or cost limit)
-
-The agent (Claude Opus 4.6) writes prompts for a different model (Gemini 2.5 Flash) — it learns what works by observing the target model's mistakes, not by introspection.
-
-## The Task
-
-**Event information extraction**: given free-form text (emails, social posts, memos, flyers), extract structured JSON with 6 fields: `name`, `date`, `time`, `location`, `price`, `organizer`. Use `null` for missing fields.
-
-The eval set covers 30 diverse inputs: formal invitations, casual texts with slang and emojis, non-English text, canceled events, non-events (lost dog), rumors, multi-tier pricing, flash sales, and more.
-
-## Results
-
-| Experiment | Accuracy | Delta | Status | What Changed |
-|-----------|----------|-------|--------|-------------|
-| Baseline | 74.72% | — | keep | 4-line minimal prompt |
-| Exp 1 | 88.06% | +13.3 | keep | Core rules + 2 few-shot examples |
-| Exp 2 | 92.22% | +4.2 | keep | Organizer, year, event classification rules |
-| Exp 3 | 95.56% | +3.3 | keep | Relative dates, price edge cases |
-| Exp 4 | 98.61% | +3.1 | keep | Targeted name/location/time fixes |
-| Exp 5 | 97.50% | -1.1 | **discard** | Over-specified rules — regressed |
-| Exp 6 | 99.17% | +0.6 | keep | 3rd few-shot example |
-| Exp 7 | 99.72% | +0.6 | keep | Name/location refinement |
-| Exp 8 | 100.00% | +0.3 | keep | Final location fix — **perfect** |
-
-## Quick Start
+## Setup
 
 ```bash
-# Clone
-git clone https://github.com/az9713/autoresearch-prompt-optimization.git
-cd autoresearch-prompt-optimization
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure (Gemini free tier recommended)
+python3.11 -m pip install -r requirements.txt
+cd ocr_runtime && npm install && cd ..
 cp .env.example .env
-# Edit .env with your API key
-
-# Run a single evaluation
-python evaluate.py
-
-# Run the full autoresearch loop (requires Claude Code)
-claude /autoresearch
 ```
 
-## Project Structure
+Configure `.env` with the local AWS profile, S3 buckets, decrypt salts, AI
+gateway credentials, and optimizer LLM key.
 
-```
-prompt-optimizer/
-├── prompt.txt              # The system prompt (only file the agent modifies)
-├── eval_set.jsonl           # 30 test examples with ground truth (read-only)
-├── evaluate.py              # Evaluation script (read-only)
-├── program.md               # Autoresearch loop instructions for the agent
-├── resources.md             # Accumulated learnings from experiments
-├── .env.example             # Environment config template
-├── requirements.txt         # Python dependencies
-├── progress.png             # Accuracy progression chart
-├── generate_progress.py     # Script to regenerate the chart
-├── results.tsv              # Experiment log (generated during runs)
-├── AUTORESEARCH_DOCUMENTATION.md  # Deep-dive walkthrough
-└── .claude/commands/
-    └── autoresearch.md      # Claude Code slash command definition
+Required dataset columns:
+
+- `card_image`
+- `origin`
+- `md5_card_number`
+
+`md5_card_number` can contain multiple accepted card numbers separated by newlines.
+
+## Run
+
+```bash
+AWS_PROFILE=code-ocr-role python3.11 -m optimizer.autorun --dataset datasets/IT-ST-RZ-TB-500.xlsx
 ```
 
-## Documentation
+Outputs are written under `runs/card-ocr-prompt-opt/`.
 
-For a detailed walkthrough of every iteration — including the exact prompt at each stage, what changed and why, failure analysis, and key takeaways:
+Each iteration:
 
-**[AUTORESEARCH_DOCUMENTATION.md](AUTORESEARCH_DOCUMENTATION.md)**
+1. evaluates the accepted prompt,
+2. asks the optimizer LLM to rewrite `prompts/ocr.js` from failure reports,
+3. validates the generated JavaScript prompt file,
+4. runs the dev split,
+5. runs the full dataset only if dev accuracy improves,
+6. commits the prompt only if full business accuracy improves,
+7. restores the previous prompt content otherwise.
 
-## Key Insights
+Business accuracy follows the `card-type` matching rule: exact match first,
+then expected-order `includes` matching, with each actual OCR code consumed at
+most once. Infrastructure failures such as S3 download, decrypt, AI, and parse
+errors are excluded from the prompt accuracy denominator.
 
-- **Few-shot examples > rules at high accuracy.** Rules can conflict; examples demonstrate.
-- **The discard mechanism is essential.** Iteration 5 regressed — caught instantly, reverted.
-- **Diminishing returns are real.** First iteration: +13 points. Last: +0.3 points.
-- **Cross-model optimization works.** Claude writes prompts, Gemini executes them.
-- **Data-driven beats intuition.** Reading `last_run.json` after each eval turns prompt engineering from art into engineering.
+## Useful Checks
 
-## Acknowledgments
+```bash
+pytest -q
+cd ocr_runtime && npm run check && cd ..
+python3.11 -m optimizer.autorun --help
+node --check prompts/ocr.js
+```
 
-- [Andrej Karpathy](https://github.com/karpathy) for the [autoresearch](https://github.com/karpathy/autoresearch) pattern
-- Built with [Claude Code](https://claude.ai/claude-code) (Claude Opus 4.6)
-- Evaluated on [Gemini 2.5 Flash](https://ai.google.dev/) (free tier)
+## Runtime Layout
+
+```text
+optimizer/          Python orchestration, scoring, reporting, LLM, keep/discard
+ocr_runtime/        vendored Node OCR runtime copied from code-ocr
+prompts/ocr.js      only prompt file the optimizer may replace
+datasets/           local Excel datasets, ignored by git
+runs/               generated experiment artifacts, ignored by git
+```
