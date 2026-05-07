@@ -15,7 +15,7 @@ def test_config_defaults(monkeypatch):
     ]:
         monkeypatch.delenv(name, raising=False)
 
-    cfg = OptimizerConfig.from_env()
+    cfg = OptimizerConfig.from_env(load_dotenv_file=False)
 
     assert cfg.s3_read_region == "ap-east-1"
     assert cfg.ocr_concurrency == 10
@@ -34,7 +34,7 @@ def test_config_reads_env_values(monkeypatch):
     monkeypatch.setenv("OPTIMIZER_PROVIDER", "openai")
     monkeypatch.setenv("OPTIMIZER_MODEL", "gpt-5.4")
 
-    cfg = OptimizerConfig.from_env()
+    cfg = OptimizerConfig.from_env(load_dotenv_file=False)
 
     assert cfg.ocr_concurrency == 4
     assert cfg.dev_sample_size == 25

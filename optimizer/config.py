@@ -39,8 +39,9 @@ class OptimizerConfig:
     ocr_runner_path: Path
 
     @classmethod
-    def from_env(cls) -> "OptimizerConfig":
-        load_dotenv()
+    def from_env(cls, *, load_dotenv_file: bool = True) -> "OptimizerConfig":
+        if load_dotenv_file:
+            load_dotenv()
         return cls(
             s3_read_region=_str_env("S3_READ_REGION", "ap-east-1"),
             ocr_concurrency=_int_env("OCR_CONCURRENCY", 10),
