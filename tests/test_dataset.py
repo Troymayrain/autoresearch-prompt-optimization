@@ -35,6 +35,18 @@ def test_load_dataset_rejects_missing_required_column(tmp_path):
         load_dataset(path)
 
 
+def test_load_dataset_rejects_empty_workbook_without_header(tmp_path):
+    path = tmp_path / "empty.xlsx"
+    wb = Workbook()
+    wb.save(path)
+
+    with pytest.raises(
+        ValueError,
+        match="missing required columns: card_image, origin, md5_card_number",
+    ):
+        load_dataset(path)
+
+
 def test_load_dataset_rejects_empty_image(tmp_path):
     path = tmp_path / "bad.xlsx"
     _write_xlsx(path, [["", 0, "1234"]])
