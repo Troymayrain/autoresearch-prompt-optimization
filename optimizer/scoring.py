@@ -31,55 +31,61 @@ class ScoreSummary:
     strict_accuracy: float
 
 
+def _to_text(value: object) -> str:
+    return "" if value is None else str(value)
+
+
 def normalize_business(value: object) -> str:
-    stripped = BUSINESS_STRIP_RE.sub("", str(value or ""))
+    stripped = BUSINESS_STRIP_RE.sub("", _to_text(value))
     return stripped.upper().replace("O", "0").replace("I", "1").replace("S", "5")
 
 
 def normalize_strict(value: object) -> str:
-    return BUSINESS_STRIP_RE.sub("", str(value or "")).upper()
+    return BUSINESS_STRIP_RE.sub("", _to_text(value)).upper()
 
 
 def split_codes(value: object) -> list[str]:
-    return [part.strip() for part in str(value or "").splitlines() if part.strip()]
+    return [part.strip() for part in _to_text(value).splitlines() if part.strip()]
 
 
 def _match(expected_raw: Sequence[str], actual_raw: Sequence[str], normalizer) -> tuple[int, list[str], list[str]]:
-    expected_norm = [normalizer(item) for item in expected_raw if normalizer(item)]
-    actual_norm = [normalizer(item) for item in actual_raw if normalizer(item)]
-    used_actual = [False] * len(actual_norm)
-    matched = [False] * len(expected_norm)
+    expected = [(item, normalizer(item)) for item in expected_raw]
+    actual = [(item, normalizer(item)) for item in actual_raw]
+    expected = [(raw, norm) for raw, norm in expected if norm]
+    actual = [(raw, norm) for raw, norm in actual if norm]
+    used_actual = [False] * len(actual)
+    matched = [False] * len(expected)
 
-    for i, expected in enumerate(expected_norm):
-        for j, actual in enumerate(actual_norm):
-            if not used_actual[j] and actual == expected:
+    for i, (_, expected_norm) in enumerate(expected):
+        for j, (_, actual_norm) in enumerate(actual):
+            if not used_actual[j] and actual_norm == expected_norm:
                 used_actual[j] = True
                 matched[i] = True
                 break
 
-    for i, expected in enumerate(expected_norm):
+    for i, (_, expected_norm) in enumerate(expected):
         if matched[i]:
             continue
-        for j, actual in enumerate(actual_norm):
-            if not used_actual[j] and expected in actual:
+        for j, (_, actual_norm) in enumerate(actual):
+            if not used_actual[j] and expected_norm in actual_norm:
                 used_actual[j] = True
                 matched[i] = True
                 break
 
-    unmatched_expected = [expected_raw[i] for i, ok in enumerate(matched) if not ok]
-    unmatched_actual = [actual_raw[i] for i, used in enumerate(used_actual) if not used]
+    unmatched_expected = [raw for (raw, _), ok in zip(expected, matched) if not ok]
+    unmatched_actual = [raw for (raw, _), used in zip(actual, used_actual) if not used]
     return sum(1 for ok in matched if ok), unmatched_expected, unmatched_actual
 
 
 def score_row(expected_raw: object, actual_codes: Sequence[object]) -> RowScore:
     expected = split_codes(expected_raw)
-    actual = [str(item or "").strip() for item in actual_codes if str(item or "").strip()]
+    actual = [code for item in actual_codes for code in split_codes(item)]
     if not expected:
-        return RowScore(str(expected_raw or ""), actual, 0, 0, 0, [], actual)
+        return RowScore(_to_text(expected_raw), actual, 0, 0, 0, [], actual)
     business_correct, unmatched_expected, unmatched_actual = _match(expected, actual, normalize_business)
     strict_correct, _, _ = _match(expected, actual, normalize_strict)
     return RowScore(
-        expected_raw=str(expected_raw or ""),
+        expected_raw=_to_text(expected_raw),
         actual_raw=actual,
         business_total=len([item for item in expected if normalize_business(item)]),
         business_correct=business_correct,

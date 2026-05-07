@@ -11,6 +11,15 @@ def test_business_normalization_matches_card_type_rules():
     assert normalize_business(" ab-OI S\u3000-12 ") == "AB01512"
 
 
+def test_falsey_values_are_string_normalized():
+    assert normalize_business(0) == "0"
+
+    result = score_row(0, [0])
+
+    assert result.business_correct == 1
+    assert result.business_total == 1
+
+
 def test_strict_normalization_does_not_replace_ois():
     assert normalize_strict(" O-I-S ") == "OIS"
 
@@ -32,6 +41,25 @@ def test_order_independent_multi_code_match():
 
     assert result.business_correct == 2
     assert result.business_accuracy == 100.0
+
+
+def test_actual_cells_are_split_by_newline():
+    result = score_row("AAA\nBBB", ["AAA\nBBB"])
+
+    assert result.business_correct == 2
+    assert result.business_accuracy == 100.0
+
+
+def test_filtering_keeps_unmatched_expected_aligned():
+    result = score_row("-\nABC", ["MISS"])
+
+    assert result.unmatched_expected == ["ABC"]
+
+
+def test_filtering_keeps_unmatched_actual_aligned():
+    result = score_row("AAA", ["-", "MISS"])
+
+    assert result.unmatched_actual == ["MISS"]
 
 
 def test_empty_expected_is_skipped():
