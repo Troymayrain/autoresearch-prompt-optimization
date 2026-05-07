@@ -1,7 +1,7 @@
 {
   "scripts": {
     "test": "node --test test/*.test.js",
-    "check": "node --check ai-provider.js && node --check handler-ocr.js && node --check shared.js && node --check utils.js && node --check log-sanitizer.js && node --check prompts/index.js && node --check ../prompts/ocr.js"
+    "check": "node --check ai-provider.js && node --check handler-ocr.js && node --check shared.js && node --check utils.js && node --check log-sanitizer.js && node --check prompts/index.js && node --check run_ocr.js && node --check ../prompts/ocr.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.800.0",
