@@ -188,7 +188,8 @@ Business matching:
 - First pass: normalized equality.
 - Second pass: expected code contained in actual code.
 - Each actual code can be consumed only once.
-- Order does not matter.
+- Matching does not require positional alignment.
+- Includes ambiguity follows `card-type` expected-order greedy tie-break; it does not do maximum matching.
 
 Strict accuracy is diagnostic only:
 

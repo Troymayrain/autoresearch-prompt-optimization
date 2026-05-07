@@ -36,11 +36,26 @@ def test_exact_then_includes_match_consumes_actual_once():
     assert result.unmatched_expected == ["ABC"]
 
 
-def test_order_independent_multi_code_match():
+def test_matching_is_not_positional():
     result = score_row("AAA\nBBB", ["xxxBBBxxx", "AAA"])
 
     assert result.business_correct == 2
     assert result.business_accuracy == 100.0
+
+
+def test_ambiguous_includes_follow_expected_order_greedy_tie_break():
+    result = score_row("A\nAB", ["ABX\nAY"])
+
+    assert result.business_correct == 1
+    assert result.business_total == 2
+    assert result.unmatched_expected == ["AB"]
+
+
+def test_ambiguous_includes_can_match_when_specific_code_is_first():
+    result = score_row("AB\nA", ["ABX\nAY"])
+
+    assert result.business_correct == 2
+    assert result.business_total == 2
 
 
 def test_actual_cells_are_split_by_newline():
