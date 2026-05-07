@@ -16,6 +16,38 @@ class PromptGateError(RuntimeError):
     pass
 
 
+def _decode_js_escape(source: str, index: int) -> tuple[int, str]:
+    if index + 1 >= len(source):
+        raise PromptGateError("unterminated string literal")
+
+    escape = source[index + 1]
+    simple = {
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "f": "\f",
+        "b": "\b",
+        "\\": "\\",
+        "'": "'",
+        '"': '"',
+        "`": "`",
+    }
+    if escape in simple:
+        return index + 2, simple[escape]
+    if escape == "x":
+        hex_value = source[index + 2 : index + 4]
+        if len(hex_value) != 2 or any(char not in "0123456789abcdefABCDEF" for char in hex_value):
+            raise PromptGateError("invalid hex escape")
+        return index + 4, chr(int(hex_value, 16))
+    if escape == "u":
+        hex_value = source[index + 2 : index + 6]
+        if len(hex_value) != 4 or any(char not in "0123456789abcdefABCDEF" for char in hex_value):
+            raise PromptGateError("invalid unicode escape")
+        return index + 6, chr(int(hex_value, 16))
+    return index + 2, escape
+
+
 def _skip_space_and_comments(source: str, index: int) -> int:
     while index < len(source):
         if source[index].isspace():
@@ -41,10 +73,8 @@ def _scan_string(source: str, index: int) -> tuple[int, str]:
     while index < len(source):
         char = source[index]
         if char == "\\":
-            if index + 1 >= len(source):
-                raise PromptGateError("unterminated string literal")
-            chunks.append(source[index : index + 2])
-            index += 2
+            index, decoded = _decode_js_escape(source, index)
+            chunks.append(decoded)
             continue
         if quote == "`" and source.startswith("${", index):
             raise PromptGateError("template expressions are not string literals")

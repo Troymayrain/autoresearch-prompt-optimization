@@ -55,6 +55,18 @@ def test_validate_prompt_file_rejects_non_string_export(tmp_path):
         validate_prompt_file(prompt, node_binary="node")
 
 
+@pytest.mark.parametrize("prefix", [r"'\n'", r"'\u0020'"])
+def test_validate_prompt_file_rejects_escaped_whitespace_prefix(tmp_path, prefix):
+    prompt = tmp_path / "ocr.js"
+    prompt.write_text(
+        f"module.exports={{PROMPT_PREFIX:{prefix},PROMPT_SIMPLE:'b',PROMPT_COMPLEX:'c',PROMPT_COMPLET:'d',PROMPT_DETECT:'e'}};",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PromptGateError, match="PROMPT_PREFIX"):
+        validate_prompt_file(prompt, node_binary="node")
+
+
 def test_validate_prompt_file_rejects_syntax_error(tmp_path):
     prompt = tmp_path / "ocr.js"
     prompt.write_text("module.exports={PROMPT_PREFIX:;", encoding="utf-8")
