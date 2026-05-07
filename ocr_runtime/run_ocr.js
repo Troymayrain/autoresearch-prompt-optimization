@@ -21,6 +21,7 @@ async function main() {
 
 main().catch(error => {
   const message = error && error.message ? error.message : String(error);
+  process.stderr.write(`${message}\n`);
   process.stdout.write(JSON.stringify({ status: 500, message: 'failed', error: message }));
-  process.exitCode = 0;
+  process.exitCode = 1;
 });

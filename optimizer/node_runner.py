@@ -31,9 +31,13 @@ class OcrPayload:
 
 
 class OcrRunner:
-    def __init__(self, node_binary: str, runner_path: str | Path):
+    def __init__(self, node_binary: str, runner_path: str | Path, timeout_seconds: float = 120.0):
         self.node_binary = node_binary
-        self.runner_path = Path(runner_path)
+        path = Path(runner_path)
+        if not path.is_absolute():
+            path = Path(__file__).resolve().parents[1] / path
+        self.runner_path = path
+        self.timeout_seconds = timeout_seconds
 
     async def run_one(self, payload: OcrPayload) -> dict[str, Any]:
         proc = await asyncio.create_subprocess_exec(
@@ -43,7 +47,15 @@ class OcrRunner:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate(payload.to_json().encode("utf-8"))
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(payload.to_json().encode("utf-8")),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            proc.kill()
+            await proc.communicate()
+            raise OcrRunnerError(f"node runner timed out after {self.timeout_seconds:g} seconds") from exc
         if proc.returncode != 0:
             raise OcrRunnerError(
                 stderr.decode("utf-8", errors="replace") or f"node exited {proc.returncode}"
