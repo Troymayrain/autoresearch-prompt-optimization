@@ -45,7 +45,9 @@ def _decode_js_escape(source: str, index: int) -> tuple[int, str]:
         if len(hex_value) != 4 or any(char not in "0123456789abcdefABCDEF" for char in hex_value):
             raise PromptGateError("invalid unicode escape")
         return index + 6, chr(int(hex_value, 16))
-    return index + 2, escape
+    if escape.isdigit():
+        raise PromptGateError("legacy octal escapes are not allowed")
+    raise PromptGateError("unknown escape sequence")
 
 
 def _skip_space_and_comments(source: str, index: int) -> int:
@@ -95,13 +97,46 @@ def _scan_identifier(source: str, index: int) -> tuple[int, str]:
     return index, source[start:index]
 
 
-def _module_exports_body(source: str) -> str:
-    marker = "module.exports"
-    index = source.find(marker)
-    if index < 0:
-        raise PromptGateError("missing module.exports object")
+def _identifier_at(source: str, index: int) -> tuple[int, str] | None:
+    if index >= len(source) or not (source[index].isalpha() or source[index] in "_$"):
+        return None
+    return _scan_identifier(source, index)
 
-    index = _skip_space_and_comments(source, index + len(marker))
+
+def _find_module_exports(source: str) -> int:
+    index = 0
+    while index < len(source):
+        index = _skip_space_and_comments(source, index)
+        if index >= len(source):
+            break
+        if source[index] in "'\"`":
+            index, _ = _scan_string(source, index)
+            continue
+
+        identifier = _identifier_at(source, index)
+        if identifier is None:
+            index += 1
+            continue
+
+        index, name = identifier
+        if name != "module":
+            continue
+        index = _skip_space_and_comments(source, index)
+        if index >= len(source) or source[index] != ".":
+            continue
+        index = _skip_space_and_comments(source, index + 1)
+        identifier = _identifier_at(source, index)
+        if identifier is None:
+            continue
+        index, name = identifier
+        if name == "exports":
+            return index
+
+    raise PromptGateError("missing module.exports object")
+
+
+def _module_exports_body(source: str) -> str:
+    index = _skip_space_and_comments(source, _find_module_exports(source))
     if index >= len(source) or source[index] != "=":
         raise PromptGateError("missing module.exports assignment")
     index = _skip_space_and_comments(source, index + 1)
