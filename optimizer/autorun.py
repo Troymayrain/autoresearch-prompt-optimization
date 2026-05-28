@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Sequence
 
 from optimizer.config import OptimizerConfig
-from optimizer.dataset import Sample, load_dataset, split_samples
+from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
 from optimizer.evaluation import EvaluationResult, evaluate_samples
 from optimizer.git_control import commit_prompt, restore_prompt
 from optimizer.llm import build_optimizer_messages, call_optimizer_llm
 from optimizer.node_runner import OcrRunner
 from optimizer.prompt_gate import validate_prompt_file
 from optimizer.reporting import write_run_artifacts
-from optimizer.scoring import aggregate_scores
+from optimizer.scoring import aggregate_scores, aggregate_type_scores
 
 
 def should_stop(
@@ -29,7 +29,11 @@ def should_stop(
     return full_accuracy >= target or plateau_count >= plateau_window or iteration >= max_iterations
 
 
-def _accuracy(results: Sequence[EvaluationResult]) -> float:
+def _accuracy(results: Sequence[EvaluationResult], task: TaskName = "code") -> float:
+    if task == "type":
+        return aggregate_type_scores(
+            result.type_score for result in results if result.type_score is not None
+        ).type_accuracy
     return aggregate_scores(result.row_score for result in results).business_accuracy
 
 
@@ -38,8 +42,13 @@ def _run_dir(base: Path, iteration: int) -> Path:
     return base / name
 
 
-async def run_once(samples: Sequence[Sample], runner: OcrRunner, concurrency: int) -> list[EvaluationResult]:
-    return await evaluate_samples(samples, runner, concurrency)
+async def run_once(
+    samples: Sequence[Sample],
+    runner: OcrRunner,
+    concurrency: int,
+    task: TaskName = "code",
+) -> list[EvaluationResult]:
+    return await evaluate_samples(samples, runner, concurrency, task)
 
 
 def _results_for_samples(
@@ -74,6 +83,7 @@ def _write_artifacts(
     prompt_after: str,
     optimizer_request: dict,
     optimizer_response: dict,
+    task: TaskName,
 ) -> str:
     write_run_artifacts(
         run_dir,
@@ -83,6 +93,7 @@ def _write_artifacts(
         prompt_after,
         optimizer_request,
         optimizer_response,
+        task,
     )
     diff = run_dir / "prompt.diff"
     return diff.read_text(encoding="utf-8") if diff.exists() else ""
@@ -109,20 +120,21 @@ def _gate_retry_user(original_user: str, gate_error: str, invalid_prompt: str) -
 
 
 async def main_async(args: argparse.Namespace) -> int:
+    task = args.task
     cfg = OptimizerConfig.from_env()
-    samples = load_dataset(args.dataset)
+    samples = load_dataset(args.dataset, task=task)
     split = split_samples(samples, cfg.dev_sample_size)
     runner = OcrRunner(cfg.node_binary, cfg.ocr_runner_path)
-    experiment_dir = cfg.runs_dir / "card-ocr-prompt-opt"
+    experiment_dir = cfg.runs_dir / f"card-ocr-prompt-opt-{task}"
     prompt_path = cfg.prompt_path
     recent_diffs: list[str] = []
     plateau_count = 0
 
     validate_prompt_file(prompt_path, cfg.node_binary)
     baseline_prompt = prompt_path.read_text(encoding="utf-8")
-    full_results = await run_once(split.full, runner, cfg.ocr_concurrency)
-    best_full_accuracy = _accuracy(full_results)
-    best_dev_accuracy = _accuracy(_results_for_samples(full_results, split.dev))
+    full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
+    best_full_accuracy = _accuracy(full_results, task)
+    best_dev_accuracy = _accuracy(_results_for_samples(full_results, split.dev), task)
     accepted_dir = _run_dir(experiment_dir, 0)
     _write_artifacts(
         accepted_dir,
@@ -132,6 +144,7 @@ async def main_async(args: argparse.Namespace) -> int:
         baseline_prompt,
         {},
         {},
+        task,
     )
 
     for iteration in range(1, cfg.max_iterations + 1):
@@ -155,7 +168,7 @@ async def main_async(args: argparse.Namespace) -> int:
             failure_clusters,
             failures,
             recent_diffs,
-            task=getattr(args, "task", "code"),
+            task=task,
         )
         request = {"system": system, "user": user}
         run_dir = _run_dir(experiment_dir, iteration)
@@ -165,13 +178,27 @@ async def main_async(args: argparse.Namespace) -> int:
             response = asdict(proposal)
 
             if proposal.prompt_file == current_prompt:
-                _write_artifacts(run_dir, "proposal_no_change", [], current_prompt, current_prompt, request, response)
+                _write_artifacts(
+                    run_dir,
+                    "proposal_no_change",
+                    [],
+                    current_prompt,
+                    current_prompt,
+                    request,
+                    response,
+                    task,
+                )
                 plateau_count += 1
                 break
 
             prompt_path.write_text(proposal.prompt_file, encoding="utf-8")
             try:
-                validate_prompt_file(prompt_path, cfg.node_binary)
+                validate_prompt_file(
+                    prompt_path,
+                    cfg.node_binary,
+                    task=task,
+                    baseline_source=current_prompt,
+                )
                 break
             except Exception as exc:
                 restore_prompt(prompt_path, current_prompt)
@@ -189,6 +216,7 @@ async def main_async(args: argparse.Namespace) -> int:
                         proposal.prompt_file,
                         request,
                         response,
+                        task,
                     )
                 )
                 plateau_count += 1
@@ -199,8 +227,8 @@ async def main_async(args: argparse.Namespace) -> int:
         if prompt_path.read_text(encoding="utf-8") == current_prompt:
             continue
 
-        dev_results = await run_once(split.dev, runner, cfg.ocr_concurrency)
-        dev_accuracy = _accuracy(dev_results)
+        dev_results = await run_once(split.dev, runner, cfg.ocr_concurrency, task)
+        dev_accuracy = _accuracy(dev_results, task)
         if dev_accuracy <= best_dev_accuracy:
             recent_diffs.append(
                 _write_artifacts(
@@ -211,14 +239,15 @@ async def main_async(args: argparse.Namespace) -> int:
                     proposal.prompt_file,
                     request,
                     response,
+                    task,
                 )
             )
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
             continue
 
-        full_results = await run_once(split.full, runner, cfg.ocr_concurrency)
-        full_accuracy = _accuracy(full_results)
+        full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
+        full_accuracy = _accuracy(full_results, task)
         recent_diffs.append(
             _write_artifacts(
                 run_dir,
@@ -228,6 +257,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 proposal.prompt_file,
                 request,
                 response,
+                task,
             )
         )
         if full_accuracy > best_full_accuracy:
@@ -235,7 +265,10 @@ async def main_async(args: argparse.Namespace) -> int:
             best_dev_accuracy = dev_accuracy
             accepted_dir = run_dir
             plateau_count = 0
-            commit_prompt(prompt_path, f"prompt: improve card OCR accuracy to {full_accuracy:.2f}%")
+            commit_prompt(
+                prompt_path,
+                f"prompt({task}): improve {task} OCR accuracy to {full_accuracy:.2f}%",
+            )
         else:
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1

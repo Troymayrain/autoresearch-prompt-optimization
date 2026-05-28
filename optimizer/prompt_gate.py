@@ -264,6 +264,7 @@ def validate_prompt_file(
     node_binary: str = "node",
     task: TaskName | None = None,
     baseline_path: str | Path | None = None,
+    baseline_source: str | None = None,
 ) -> None:
     prompt_path = Path(path)
     check = subprocess.run(
@@ -275,9 +276,16 @@ def validate_prompt_file(
         raise PromptGateError(check.stderr.strip() or "prompt syntax check failed")
 
     exports = _required_string_exports(prompt_path.read_text(encoding="utf-8"))
-    if task is None and baseline_path is None:
+    if task is None and baseline_path is None and baseline_source is None:
         return
-    if task is None or baseline_path is None:
-        raise PromptGateError("task boundary validation requires task and baseline_path")
-    baseline = _required_string_exports(Path(baseline_path).read_text(encoding="utf-8"))
+    if task is None or (baseline_path is None and baseline_source is None):
+        raise PromptGateError("task boundary validation requires task and baseline")
+    if baseline_path is not None and baseline_source is not None:
+        raise PromptGateError("task boundary validation accepts one baseline")
+    baseline_text = (
+        baseline_source
+        if baseline_source is not None
+        else Path(baseline_path).read_text(encoding="utf-8")
+    )
+    baseline = _required_string_exports(baseline_text)
     _validate_task_boundary(exports, baseline, task)

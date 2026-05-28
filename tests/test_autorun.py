@@ -33,7 +33,17 @@ def test_accuracy_uses_business_score_only():
         {"status": 200, "data": [{"number": "ABC"}], "imageStatus": ["ok"]},
     )
 
-    assert _accuracy([result]) == 100.0
+    assert _accuracy([result], task="code") == 100.0
+
+
+def test_accuracy_uses_type_score_for_type_task():
+    result = EvaluationResult.from_ocr_response(
+        Sample(2, "a.png", 0, "Physics", True),
+        {"status": 200, "data": [{"type": "Physics", "number": "wrong"}], "imageStatus": ["ok"]},
+        task="type",
+    )
+
+    assert _accuracy([result], task="type") == 100.0
 
 
 @pytest.mark.asyncio
@@ -64,12 +74,23 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
     )
 
     monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(autorun, "load_dataset", lambda path: [sample])
+    loaded_tasks = []
+
+    def fake_load_dataset(path, task):
+        loaded_tasks.append(task)
+        return [sample]
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
     monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
-    monkeypatch.setattr(autorun, "validate_prompt_file", lambda path, node_binary="node": None)
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
     monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
 
-    async def fake_run_once(samples, runner, concurrency):
+    async def fake_run_once(samples, runner, concurrency, task):
+        assert task == "code"
         actual = "B" if prompt.read_text(encoding="utf-8") == "bad" else "A"
         return [
             EvaluationResult.from_ocr_response(
@@ -88,6 +109,7 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
 
     await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
 
+    assert loaded_tasks == ["code"]
     assert seen_accuracies == [100.0, 100.0]
     assert prompt.read_text(encoding="utf-8") == "good"
 
@@ -97,7 +119,7 @@ async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_pa
     prompt = tmp_path / "prompts" / "ocr.js"
     prompt.parent.mkdir()
     prompt.write_text("old-valid", encoding="utf-8")
-    sample = Sample(2, "a.png", 0, "A", True)
+    sample = Sample(2, "a.png", 0, "Physics", True)
     cfg = types.SimpleNamespace(
         dev_sample_size=1,
         ocr_concurrency=1,
@@ -121,20 +143,21 @@ async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_pa
     commits = []
 
     monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(autorun, "load_dataset", lambda path: [sample])
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
     monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
     monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
 
-    def fake_validate(path, node_binary="node"):
+    def fake_validate(path, node_binary="node", task=None, baseline_source=None):
         if prompt.read_text(encoding="utf-8").startswith("---"):
             raise RuntimeError("prompt syntax check failed")
 
-    async def fake_run_once(samples, runner, concurrency):
-        actual = "A" if prompt.read_text(encoding="utf-8") == "new-valid" else "B"
+    async def fake_run_once(samples, runner, concurrency, task):
+        actual_type = "Physics" if prompt.read_text(encoding="utf-8") == "new-valid" else "E-codes"
         return [
             EvaluationResult.from_ocr_response(
                 item,
-                {"status": 200, "data": [{"number": actual}], "imageStatus": ["ok"]},
+                {"status": 200, "data": [{"type": actual_type, "number": "wrong"}], "imageStatus": ["ok"]},
+                task="type",
             )
             for item in samples
         ]
@@ -155,5 +178,124 @@ async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_pa
     assert "PROMPT_COMPLEX" in " ".join(retry_payload["mutation_boundary"]["allowed"])
     assert retry_payload["gate_error"] == "prompt syntax check failed"
     assert prompt.read_text(encoding="utf-8") == "new-valid"
-    assert commits == ["prompt: improve card OCR accuracy to 100.00%"]
-    assert json.loads((tmp_path / "runs/card-ocr-prompt-opt/run-001/summary.json").read_text())["phase"] == "full"
+    assert commits == ["prompt(type): improve type OCR accuracy to 100.00%"]
+    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/summary.json").read_text())
+    assert summary["task"] == "type"
+
+
+@pytest.mark.asyncio
+async def test_autorun_uses_type_metric_for_keep_commit_and_artifacts(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("old-valid", encoding="utf-8")
+    sample = Sample(2, "a.png", 0, "Physics", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    commits = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(
+        autorun,
+        "call_optimizer_llm",
+        lambda provider, model, system, user: OptimizerProposal("h", "e", "r", "new-valid"),
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        assert task == "type"
+        actual_type = "Physics" if prompt.read_text(encoding="utf-8") == "new-valid" else "E-codes"
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"type": actual_type, "number": "wrong"}], "imageStatus": ["ok"]},
+                task="type",
+            )
+            for item in samples
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="type"))
+
+    assert commits == ["prompt(type): improve type OCR accuracy to 100.00%"]
+    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/summary.json").read_text())
+    assert summary["task"] == "type"
+    assert summary["type_accuracy"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_autorun_records_gate_failure_without_running_dev_or_full(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("old-valid", encoding="utf-8")
+    sample = Sample(2, "a.png", 0, "A", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    run_prompts = []
+    proposals = iter(
+        [
+            OptimizerProposal("h1", "e1", "r1", "bad-boundary"),
+            OptimizerProposal("h2", "e2", "r2", "bad-boundary"),
+        ]
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
+    monkeypatch.setattr(autorun, "call_optimizer_llm", lambda provider, model, system, user: next(proposals))
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    def fake_validate(path, node_binary="node", task=None, baseline_source=None):
+        if prompt.read_text(encoding="utf-8") == "bad-boundary":
+            raise RuntimeError("code task cannot change protected exports")
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        run_prompts.append(prompt.read_text(encoding="utf-8"))
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": "A"}], "imageStatus": ["ok"]},
+            )
+            for item in samples
+        ]
+
+    monkeypatch.setattr(autorun, "validate_prompt_file", fake_validate)
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    assert run_prompts == ["old-valid"]
+    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-code/run-001/summary.json").read_text())
+    response = json.loads((tmp_path / "runs/card-ocr-prompt-opt-code/run-001/optimizer-response.json").read_text())
+    assert summary["phase"] == "gate_failed"
+    assert summary["task"] == "code"
+    assert "code task cannot change protected exports" in response["gate_error"]
