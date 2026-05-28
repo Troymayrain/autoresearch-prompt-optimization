@@ -74,3 +74,36 @@ Closed from REVIEW-01: `FOLLOWUP-01`, `FOLLOWUP-02`, `FOLLOWUP-03`, and
 `FOLLOWUP-04`.
 
 Follow-up rows added: `FOLLOWUP-05` and `REVIEW-03`.
+
+# REVIEW-03
+
+Verdict: `gaps_found`
+
+Scope reviewed: `e334302..955ce2e` against
+`docs/prd/task-aware-code-and-type-prompt-optimization.md`, the execution CSV,
+and the `REVIEW-01` / `REVIEW-02` follow-up fixes.
+
+Findings:
+
+- P2: `FOLLOWUP-05` CSV evidence records `uv run pytest -q passed 109 tests`,
+  but a clean `955ce2e` snapshot reports `107 passed`. Functional validation is
+  green, but the evidence count is not consistent with committed files.
+
+Evidence checked:
+
+- Clean `955ce2e` snapshot `uv run pytest -q` passed with 107 tests.
+- `node --check prompts/ocr.js` passed.
+- `npm run check` in `ocr_runtime` passed.
+- `uv run poe --help` listed `code-smoke`, `code-full`, `type-smoke`, and
+  `type-full`.
+- `git show 955ce2e:docs/prd/task-aware-code-and-type-prompt-optimization.md`
+  passed.
+- Manual counterexamples confirmed the type gate rejects complex-only and
+  complete-only type-rule changes, while accepting aligned type-rule updates.
+- `optimizer/prompt_gate.py`
+- `tests/test_prompt_gate.py`
+
+Closed functionally: `FOLLOWUP-01`, `FOLLOWUP-02`, `FOLLOWUP-03`,
+`FOLLOWUP-04`, and `FOLLOWUP-05`.
+
+Follow-up rows added: `FOLLOWUP-06` and `REVIEW-04`.
