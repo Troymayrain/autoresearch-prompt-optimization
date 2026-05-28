@@ -17,6 +17,7 @@ class OcrPayload:
     origin: int
     channel: str = "TB"
     type: str = "complex"
+    mode: str = "ocr"
 
     def to_json(self) -> str:
         return json.dumps(
@@ -25,6 +26,7 @@ class OcrPayload:
                 "origin": self.origin,
                 "channel": self.channel,
                 "type": self.type,
+                "mode": self.mode,
             },
             ensure_ascii=False,
         )

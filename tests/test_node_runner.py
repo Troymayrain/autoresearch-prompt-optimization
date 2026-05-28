@@ -7,6 +7,12 @@ import pytest
 from optimizer.node_runner import OcrPayload, OcrRunner, OcrRunnerError
 
 
+def test_ocr_payload_serializes_mode_ocr():
+    payload = json.loads(OcrPayload(image="ABC123", origin=0).to_json())
+
+    assert payload["mode"] == "ocr"
+
+
 @pytest.mark.asyncio
 async def test_node_runner_returns_json_payload(tmp_path):
     script = tmp_path / "fake_runner.js"
