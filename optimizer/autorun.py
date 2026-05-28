@@ -212,6 +212,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--task", required=True, choices=("code", "type"))
     parser.add_argument("--dataset", required=True)
     return asyncio.run(main_async(parser.parse_args()))
 
