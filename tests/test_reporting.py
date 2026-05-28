@@ -7,6 +7,14 @@ from optimizer.evaluation import EvaluationResult
 from optimizer.reporting import write_run_artifacts
 
 
+def _xlsx_headers(path):
+    wb = load_workbook(path, read_only=True)
+    try:
+        return list(next(wb.active.iter_rows(values_only=True)))
+    finally:
+        wb.close()
+
+
 def test_write_run_artifacts_creates_summary_failures_and_excel(tmp_path):
     sample = Sample(2, "a.png", 0, "ABC", True)
     result = EvaluationResult.from_ocr_response(sample, {"status": 200, "data": [], "imageStatus": ["ok"]})
@@ -29,9 +37,18 @@ def test_write_run_artifacts_creates_summary_failures_and_excel(tmp_path):
     assert json.loads((tmp_path / "failures.jsonl").read_text())["task"] == "code"
     assert json.loads((tmp_path / "failure-clusters.json").read_text())["task"] == "code"
     assert (tmp_path / "results.xlsx").exists()
-    wb = load_workbook(tmp_path / "results.xlsx", read_only=True)
-    assert next(wb.active.iter_rows(values_only=True))[0] == "task"
-    wb.close()
+    assert _xlsx_headers(tmp_path / "results.xlsx") == [
+        "task",
+        "row_number",
+        "card_image",
+        "origin",
+        "expected",
+        "actual",
+        "business_correct",
+        "business_total",
+        "failure_category",
+        "image_status",
+    ]
     assert (tmp_path / "prompt.diff").read_text().startswith("--- prompt-before.js")
 
 
@@ -92,3 +109,16 @@ def test_write_type_run_artifacts_uses_type_summary(tmp_path):
     assert summary["evaluable_count"] == 1
     assert summary["not_evaluable_count"] == 1
     assert summary["failure_categories"] == {"not_evaluable": 1, "type_mismatch": 1}
+    assert _xlsx_headers(tmp_path / "results.xlsx") == [
+        "task",
+        "row_number",
+        "card_image",
+        "origin",
+        "expected",
+        "actual",
+        "type_correct",
+        "type_total",
+        "not_evaluable_reason",
+        "failure_category",
+        "image_status",
+    ]

@@ -86,37 +86,71 @@ def _write_results_xlsx(path: Path, results: Sequence[EvaluationResult], task: T
     wb = Workbook()
     ws = wb.active
     ws.title = "results"
-    ws.append(
-        [
-            "task",
-            "row_number",
-            "card_image",
-            "origin",
-            "expected",
-            "actual",
-            "business_correct",
-            "business_total",
-            "failure_category",
-            "image_status",
-        ]
-    )
-    for result in results:
-        actual = result.actual_types if task == "type" else result.actual_numbers
+    base_columns = [
+        "task",
+        "row_number",
+        "card_image",
+        "origin",
+        "expected",
+        "actual",
+    ]
+    if task == "type":
         ws.append(
-            [
-                task,
-                result.sample.row_number,
-                result.sample.card_image,
-                result.sample.origin,
-                result.sample.expected_raw,
-                "\n".join(actual),
-                result.row_score.business_correct,
-                result.row_score.business_total,
-                result.failure_category,
-                result.image_status,
+            base_columns
+            + [
+                "type_correct",
+                "type_total",
+                "not_evaluable_reason",
+                "failure_category",
+                "image_status",
             ]
         )
+        for result in results:
+            type_score = result.type_score
+            if type_score is None:
+                raise ValueError("type results require type_score")
+            ws.append(
+                _base_result_row(task, result, result.actual_types)
+                + [
+                    type_score.type_correct,
+                    type_score.type_total,
+                    type_score.not_evaluable_reason,
+                    result.failure_category,
+                    result.image_status,
+                ]
+            )
+    else:
+        ws.append(
+            base_columns
+            + [
+                "business_correct",
+                "business_total",
+                "failure_category",
+                "image_status",
+            ]
+        )
+        for result in results:
+            ws.append(
+                _base_result_row(task, result, result.actual_numbers)
+                + [
+                    result.row_score.business_correct,
+                    result.row_score.business_total,
+                    result.failure_category,
+                    result.image_status,
+                ]
+            )
     wb.save(path)
+
+
+def _base_result_row(task: TaskName, result: EvaluationResult, actual: Sequence[str]) -> list[object]:
+    return [
+        task,
+        result.sample.row_number,
+        result.sample.card_image,
+        result.sample.origin,
+        result.sample.expected_raw,
+        "\n".join(actual),
+    ]
 
 
 def write_run_artifacts(
