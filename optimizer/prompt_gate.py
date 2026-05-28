@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from optimizer.dataset import TaskName
+
 REQUIRED_EXPORTS = {
     "PROMPT_PREFIX",
     "PROMPT_SIMPLE",
@@ -10,6 +12,8 @@ REQUIRED_EXPORTS = {
     "PROMPT_COMPLET",
     "PROMPT_DETECT",
 }
+TYPE_RULE_START = "## 类型判断"
+TYPE_RULE_END_MARKERS = ("## 输出格式", "## 字段说明")
 
 
 class PromptGateError(RuntimeError):
@@ -198,17 +202,8 @@ def _static_exports(source: str) -> dict[str, str | None]:
                 index += 1
 
 
-def validate_prompt_file(path: str | Path, node_binary: str = "node") -> None:
-    prompt_path = Path(path)
-    check = subprocess.run(
-        [node_binary, "--check", str(prompt_path)],
-        text=True,
-        capture_output=True,
-    )
-    if check.returncode != 0:
-        raise PromptGateError(check.stderr.strip() or "prompt syntax check failed")
-
-    exports = _static_exports(prompt_path.read_text(encoding="utf-8"))
+def _required_string_exports(source: str) -> dict[str, str]:
+    exports = _static_exports(source)
     missing = sorted(REQUIRED_EXPORTS - set(exports))
     if missing:
         raise PromptGateError(f"missing exports: {', '.join(missing)}")
@@ -218,3 +213,71 @@ def validate_prompt_file(path: str | Path, node_binary: str = "node") -> None:
     )
     if invalid:
         raise PromptGateError(f"exports must be non-empty string literals: {', '.join(invalid)}")
+    return {key: str(exports[key]) for key in REQUIRED_EXPORTS}
+
+
+def _without_type_rules(value: str) -> str:
+    start = value.find(TYPE_RULE_START)
+    if start < 0:
+        return value
+    search_from = start + len(TYPE_RULE_START)
+    ends = []
+    for marker in TYPE_RULE_END_MARKERS:
+        marker_index = value.find(marker, search_from)
+        if marker_index >= 0:
+            ends.append(marker_index)
+    end = min(ends) if ends else len(value)
+    return value[:start] + value[end:]
+
+
+def _validate_task_boundary(
+    proposed: dict[str, str],
+    baseline: dict[str, str],
+    task: TaskName,
+) -> None:
+    if task == "code":
+        changed = [
+            key for key in ("PROMPT_COMPLEX", "PROMPT_COMPLET") if proposed[key] != baseline[key]
+        ]
+        if changed:
+            raise PromptGateError(f"code task cannot change protected exports: {', '.join(changed)}")
+        return
+
+    if task == "type":
+        protected = REQUIRED_EXPORTS - {"PROMPT_COMPLEX", "PROMPT_COMPLET"}
+        changed = [key for key in sorted(protected) if proposed[key] != baseline[key]]
+        type_rule_leaks = [
+            key
+            for key in ("PROMPT_COMPLEX", "PROMPT_COMPLET")
+            if _without_type_rules(proposed[key]) != _without_type_rules(baseline[key])
+        ]
+        if changed or type_rule_leaks:
+            blocked = changed + type_rule_leaks
+            raise PromptGateError(f"type task cannot change protected exports: {', '.join(blocked)}")
+        return
+
+    raise PromptGateError(f"unsupported task: {task}")
+
+
+def validate_prompt_file(
+    path: str | Path,
+    node_binary: str = "node",
+    task: TaskName | None = None,
+    baseline_path: str | Path | None = None,
+) -> None:
+    prompt_path = Path(path)
+    check = subprocess.run(
+        [node_binary, "--check", str(prompt_path)],
+        text=True,
+        capture_output=True,
+    )
+    if check.returncode != 0:
+        raise PromptGateError(check.stderr.strip() or "prompt syntax check failed")
+
+    exports = _required_string_exports(prompt_path.read_text(encoding="utf-8"))
+    if task is None and baseline_path is None:
+        return
+    if task is None or baseline_path is None:
+        raise PromptGateError("task boundary validation requires task and baseline_path")
+    baseline = _required_string_exports(Path(baseline_path).read_text(encoding="utf-8"))
+    _validate_task_boundary(exports, baseline, task)

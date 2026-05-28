@@ -3,6 +3,28 @@ import pytest
 from optimizer.prompt_gate import PromptGateError, validate_prompt_file
 
 
+def _prompt(
+    prefix="code rules",
+    simple="simple output",
+    complex_rules="## 类型判断\nold type\n## 输出格式\nnumber output",
+    complet_rules="## 类型判断\nold type\n## 字段说明\nbrand\nnumber",
+    detect="detect rules",
+):
+    return f"""
+module.exports = {{
+    PROMPT_PREFIX: {prefix!r},
+    PROMPT_SIMPLE: {simple!r},
+    PROMPT_COMPLEX: {complex_rules!r},
+    PROMPT_COMPLET: {complet_rules!r},
+    PROMPT_DETECT: {detect!r},
+}};
+"""
+
+
+def _write_prompt(path, **kwargs):
+    path.write_text(_prompt(**kwargs), encoding="utf-8")
+
+
 def test_validate_prompt_file_accepts_required_exports(tmp_path):
     prompt = tmp_path / "ocr.js"
     prompt.write_text(
@@ -11,6 +33,63 @@ def test_validate_prompt_file_accepts_required_exports(tmp_path):
     )
 
     validate_prompt_file(prompt, node_binary="node")
+
+
+def test_validate_prompt_file_accepts_code_detect_change(tmp_path):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(proposed, detect="detect rules plus safer candidate recall")
+
+    validate_prompt_file(proposed, node_binary="node", task="code", baseline_path=accepted)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"complex_rules": "## 类型判断\nnew type\n## 输出格式\nnumber output"},
+        {"complet_rules": "## 类型判断\nold type\n## 字段说明\nbrand changed\nnumber"},
+    ],
+)
+def test_validate_prompt_file_rejects_code_type_or_metadata_change(tmp_path, changed):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(proposed, **changed)
+
+    with pytest.raises(PromptGateError, match="code task cannot change"):
+        validate_prompt_file(proposed, node_binary="node", task="code", baseline_path=accepted)
+
+
+def test_validate_prompt_file_accepts_type_rule_changes_only(tmp_path):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(
+        proposed,
+        complex_rules="## 类型判断\nnew type\n## 输出格式\nnumber output",
+        complet_rules="## 类型判断\nnew type\n## 字段说明\nbrand\nnumber",
+    )
+
+    validate_prompt_file(proposed, node_binary="node", task="type", baseline_path=accepted)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"detect": "changed detect"},
+        {"prefix": "changed number output"},
+        {"complet_rules": "## 类型判断\nold type\n## 字段说明\nbrand changed\nnumber"},
+    ],
+)
+def test_validate_prompt_file_rejects_type_forbidden_changes(tmp_path, changed):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(proposed, **changed)
+
+    with pytest.raises(PromptGateError, match="type task cannot change"):
+        validate_prompt_file(proposed, node_binary="node", task="type", baseline_path=accepted)
 
 
 def test_validate_prompt_file_rejects_missing_export(tmp_path):
