@@ -107,3 +107,41 @@ Closed functionally: `FOLLOWUP-01`, `FOLLOWUP-02`, `FOLLOWUP-03`,
 `FOLLOWUP-04`, and `FOLLOWUP-05`.
 
 Follow-up rows added: `FOLLOWUP-06` and `REVIEW-04`.
+
+# REVIEW-04
+
+Verdict: `no_gaps`
+
+Scope reviewed: `e334302..fe6d6ff` against
+`docs/prd/task-aware-code-and-type-prompt-optimization.md`, the execution CSV,
+and all prior review follow-ups.
+
+Findings:
+
+- P0: none.
+- P1: none.
+- P2: none.
+
+Evidence checked:
+
+- Clean `HEAD` archive `uv run pytest -q` passed with 107 tests.
+- Clean `HEAD` archive `node --check prompts/ocr.js` passed.
+- Clean `HEAD` archive `npm run check` in `ocr_runtime` passed.
+- Clean `HEAD` archive `uv run poe --help` listed `code-smoke`,
+  `code-full`, `type-smoke`, and `type-full`.
+- `FOLLOWUP-05` now records clean `955ce2e` validation with 107 tests; the
+  stale dirty-worktree count remains only as the historical `REVIEW-03`
+  finding.
+- Manual counterexamples confirmed the type gate rejects complex-only and
+  complete-only type-rule changes, while accepting aligned type-rule updates.
+- Rechecked command wiring, dataset schema, type scoring, report summaries,
+  LLM boundary messages, autorun keep/discard, gate-failed no-OCR behavior,
+  `OcrPayload.mode`, code-task section-aware gate, type workbook columns, and
+  committed PRD source.
+- Declaration/evidence consistency holds; no real OCR smoke/full success is
+  claimed.
+
+Closed from REVIEW-01/02/03: `FOLLOWUP-01`, `FOLLOWUP-02`, `FOLLOWUP-03`,
+`FOLLOWUP-04`, `FOLLOWUP-05`, and `FOLLOWUP-06`.
+
+No new follow-up rows are needed.
