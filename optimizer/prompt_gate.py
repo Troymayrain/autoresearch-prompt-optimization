@@ -246,6 +246,13 @@ def _type_rules(value: str) -> str:
     return value[start:end]
 
 
+def _type_rule_body(value: str) -> str:
+    rules = _type_rules(value)
+    if not rules:
+        return ""
+    return rules[len(TYPE_RULE_START) :].strip()
+
+
 def _protected_metadata(value: str) -> str:
     start = value.find(METADATA_START)
     if start < 0:
@@ -288,6 +295,8 @@ def _validate_task_boundary(
         if changed or type_rule_leaks:
             blocked = changed + type_rule_leaks
             raise PromptGateError(f"type task cannot change protected exports: {', '.join(blocked)}")
+        if _type_rule_body(proposed["PROMPT_COMPLEX"]) != _type_rule_body(proposed["PROMPT_COMPLET"]):
+            raise PromptGateError("type task requires aligned type rules")
         return
 
     raise PromptGateError(f"unsupported task: {task}")

@@ -112,6 +112,30 @@ def test_validate_prompt_file_accepts_type_rule_changes_only(tmp_path):
 @pytest.mark.parametrize(
     "changed",
     [
+        {"complex_rules": "## 类型判断\nnew complex type\n## 输出格式\nnumber output"},
+        {
+            "complet_rules": (
+                "## 类型判断\nnew complete type\n## 字段说明\n"
+                "| 字段 | 判断规则 |\n|------|----------|\n"
+                "| brand | protected brand |\n| number | code number |\n"
+                "## 输出格式\nold output"
+            )
+        },
+    ],
+)
+def test_validate_prompt_file_rejects_type_rule_divergence(tmp_path, changed):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(proposed, **changed)
+
+    with pytest.raises(PromptGateError, match="type task requires aligned type rules"):
+        validate_prompt_file(proposed, node_binary="node", task="type", baseline_path=accepted)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
         {"detect": "changed detect"},
         {"prefix": "changed number output"},
         {
