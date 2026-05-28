@@ -71,6 +71,30 @@ def test_build_optimizer_messages_limits_unbounded_inputs():
     assert data["recent_diffs"] == ["diff-3", "diff-4", "diff-5", "diff-6", "diff-7"]
 
 
+def test_build_optimizer_messages_includes_code_boundary():
+    system, user = build_optimizer_messages("prompt", {}, {}, [], [], task="code")
+
+    data = json.loads(user)
+    assert data["task"] == "code"
+    assert "code extraction" in system
+    assert "number output" in system
+    assert "type classification" in system
+    assert "brand" in data["mutation_boundary"]["forbidden"]
+    assert "cardType" in data["mutation_boundary"]["forbidden"]
+
+
+def test_build_optimizer_messages_includes_type_boundary():
+    system, user = build_optimizer_messages("prompt", {}, {}, [], [], task="type")
+
+    data = json.loads(user)
+    assert data["task"] == "type"
+    assert "physical-versus-electronic type rules" in system
+    assert "PROMPT_COMPLEX" in system
+    assert "PROMPT_COMPLET" in system
+    assert "PROMPT_DETECT" in data["mutation_boundary"]["forbidden"]
+    assert "number output" in data["mutation_boundary"]["forbidden"]
+
+
 def test_call_optimizer_llm_rejects_unknown_provider_without_network():
     with pytest.raises(ValueError, match="unsupported optimizer provider"):
         call_optimizer_llm("local", "model", "system", "user")

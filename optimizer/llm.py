@@ -5,6 +5,8 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from optimizer.dataset import TaskName
+
 
 @dataclass(frozen=True)
 class OptimizerProposal:
@@ -12,6 +14,43 @@ class OptimizerProposal:
     expected_effect: str
     risk: str
     prompt_file: str
+
+
+def _mutation_boundary(task: TaskName) -> dict[str, list[str]]:
+    if task == "code":
+        return {
+            "allowed": [
+                "code extraction",
+                "number output",
+                "code-candidate detection",
+            ],
+            "forbidden": [
+                "type classification",
+                "brand",
+                "cardType",
+                "country",
+                "currency",
+                "denomination",
+            ],
+        }
+    if task == "type":
+        return {
+            "allowed": [
+                "physical-versus-electronic type rules in PROMPT_COMPLEX and PROMPT_COMPLET",
+            ],
+            "forbidden": [
+                "PROMPT_DETECT",
+                "code extraction",
+                "number output",
+                "output format",
+                "brand",
+                "cardType",
+                "country",
+                "currency",
+                "denomination",
+            ],
+        }
+    raise ValueError(f"unsupported task: {task}")
 
 
 def _json_object(text: str) -> dict[str, Any]:
@@ -58,14 +97,22 @@ def build_optimizer_messages(
     failure_clusters: dict[str, Any],
     failures: list[dict[str, Any]],
     recent_diffs: list[str],
+    task: TaskName = "code",
 ) -> tuple[str, str]:
+    boundary = _mutation_boundary(task)
     system = (
         "You improve a gift card OCR prompt. Return JSON only with exactly "
         "hypothesis, expected_effect, risk, and prompt_file. Only the prompt file "
-        "may change; do not change scoring, runtime code, datasets, or post-processing."
+        "may change; do not change scoring, runtime code, datasets, or post-processing. "
+        f"Selected task: {task}. Allowed changes: {', '.join(boundary['allowed'])}. "
+        f"Forbidden changes: {', '.join(boundary['forbidden'])}. "
+        "prompt_file must be the complete JavaScript file content starting with module.exports. "
+        "Do not return a diff, patch, markdown, or abbreviated excerpt."
     )
     user = json.dumps(
         {
+            "task": task,
+            "mutation_boundary": boundary,
             "current_prompt": current_prompt,
             "summary": summary,
             "failure_clusters": failure_clusters,

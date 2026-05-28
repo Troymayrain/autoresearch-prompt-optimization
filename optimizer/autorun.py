@@ -88,6 +88,26 @@ def _write_artifacts(
     return diff.read_text(encoding="utf-8") if diff.exists() else ""
 
 
+def _gate_retry_user(original_user: str, gate_error: str, invalid_prompt: str) -> str:
+    previous_request = json.loads(original_user)
+    return json.dumps(
+        {
+            "task": previous_request.get("task"),
+            "mutation_boundary": previous_request.get("mutation_boundary"),
+            "previous_request": previous_request,
+            "gate_error": gate_error,
+            "invalid_prompt_file_prefix": invalid_prompt[:2000],
+            "retry_instruction": (
+                "Return JSON only. The prompt_file field must be the complete valid "
+                "CommonJS JavaScript file, starting with module.exports = {. Do not return "
+                "a unified diff, patch, markdown fence, or excerpt."
+            ),
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
 async def main_async(args: argparse.Namespace) -> int:
     cfg = OptimizerConfig.from_env()
     samples = load_dataset(args.dataset)
@@ -135,35 +155,48 @@ async def main_async(args: argparse.Namespace) -> int:
             failure_clusters,
             failures,
             recent_diffs,
+            task=getattr(args, "task", "code"),
         )
         request = {"system": system, "user": user}
-        proposal = call_optimizer_llm(cfg.optimizer_provider, cfg.optimizer_model, system, user)
-        response = asdict(proposal)
         run_dir = _run_dir(experiment_dir, iteration)
 
-        if proposal.prompt_file == current_prompt:
-            _write_artifacts(run_dir, "proposal_no_change", [], current_prompt, current_prompt, request, response)
-            plateau_count += 1
+        for gate_attempt in range(2):
+            proposal = call_optimizer_llm(cfg.optimizer_provider, cfg.optimizer_model, system, user)
+            response = asdict(proposal)
+
+            if proposal.prompt_file == current_prompt:
+                _write_artifacts(run_dir, "proposal_no_change", [], current_prompt, current_prompt, request, response)
+                plateau_count += 1
+                break
+
+            prompt_path.write_text(proposal.prompt_file, encoding="utf-8")
+            try:
+                validate_prompt_file(prompt_path, cfg.node_binary)
+                break
+            except Exception as exc:
+                restore_prompt(prompt_path, current_prompt)
+                response["gate_error"] = str(exc)
+                if gate_attempt == 0:
+                    user = _gate_retry_user(user, str(exc), proposal.prompt_file)
+                    request = {"system": system, "user": user}
+                    continue
+                recent_diffs.append(
+                    _write_artifacts(
+                        run_dir,
+                        "gate_failed",
+                        [],
+                        current_prompt,
+                        proposal.prompt_file,
+                        request,
+                        response,
+                    )
+                )
+                plateau_count += 1
+                break
+        else:
             continue
 
-        prompt_path.write_text(proposal.prompt_file, encoding="utf-8")
-        try:
-            validate_prompt_file(prompt_path, cfg.node_binary)
-        except Exception as exc:
-            restore_prompt(prompt_path, current_prompt)
-            response["gate_error"] = str(exc)
-            recent_diffs.append(
-                _write_artifacts(
-                    run_dir,
-                    "gate_failed",
-                    [],
-                    current_prompt,
-                    proposal.prompt_file,
-                    request,
-                    response,
-                )
-            )
-            plateau_count += 1
+        if prompt_path.read_text(encoding="utf-8") == current_prompt:
             continue
 
         dev_results = await run_once(split.dev, runner, cfg.ocr_concurrency)
