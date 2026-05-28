@@ -31,6 +31,27 @@ class ScoreSummary:
     strict_accuracy: float
 
 
+@dataclass(frozen=True)
+class TypeRowScore:
+    expected_raw: str
+    actual_raw: list[str]
+    type_total: int
+    type_correct: int
+    not_evaluable_reason: str = ""
+
+    @property
+    def type_accuracy(self) -> float:
+        return 0.0 if self.type_total == 0 else round(self.type_correct / self.type_total * 100, 2)
+
+
+@dataclass(frozen=True)
+class TypeScoreSummary:
+    type_total: int
+    type_correct: int
+    type_accuracy: float
+    not_evaluable_count: int
+
+
 def _to_text(value: object) -> str:
     return "" if value is None else str(value)
 
@@ -106,4 +127,33 @@ def aggregate_scores(rows: Iterable[RowScore]) -> ScoreSummary:
         business_accuracy=0.0 if total == 0 else round(business_correct / total * 100, 2),
         strict_correct=strict_correct,
         strict_accuracy=0.0 if total == 0 else round(strict_correct / total * 100, 2),
+    )
+
+
+def score_type_row(expected_raw: object, actual_types: Sequence[object]) -> TypeRowScore:
+    expected = _to_text(expected_raw).strip()
+    actual = [_to_text(item).strip() for item in actual_types if _to_text(item).strip()]
+    if not expected:
+        return TypeRowScore(expected, actual, 0, 0, "missing_expected_type")
+    if not actual:
+        return TypeRowScore(expected, actual, 0, 0, "missing_type")
+
+    predicted = "".join(actual)
+    return TypeRowScore(
+        expected_raw=expected,
+        actual_raw=actual,
+        type_total=1,
+        type_correct=1 if expected in predicted else 0,
+    )
+
+
+def aggregate_type_scores(rows: Iterable[TypeRowScore]) -> TypeScoreSummary:
+    scored = list(rows)
+    total = sum(row.type_total for row in scored)
+    correct = sum(row.type_correct for row in scored)
+    return TypeScoreSummary(
+        type_total=total,
+        type_correct=correct,
+        type_accuracy=0.0 if total == 0 else round(correct / total * 100, 2),
+        not_evaluable_count=sum(1 for row in scored if row.not_evaluable_reason),
     )

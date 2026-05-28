@@ -28,6 +28,7 @@ def test_build_payload_uses_card_type_shape():
     assert payload.origin == 10
     assert payload.channel == "TB"
     assert payload.type == "complex"
+    assert payload.mode == "ocr"
 
 
 def test_evaluation_result_extracts_actual_numbers():
@@ -39,6 +40,67 @@ def test_evaluation_result_extracts_actual_numbers():
     assert item.actual_numbers == ["A-123"]
     assert item.row_score.business_correct == 1
     assert item.failure_category == ""
+
+
+def test_type_evaluation_extracts_ordered_type_values():
+    item = EvaluationResult.from_ocr_response(
+        Sample(2, "a.png||b.png", 0, "PhysicsPhysics", True),
+        {
+            "status": 200,
+            "data": [
+                {"type": "Physics", "number": "wrong"},
+                {"type": "Physics", "cardType": "ignored"},
+            ],
+            "imageStatus": ["ok"],
+        },
+        task="type",
+    )
+
+    assert item.actual_types == ["Physics", "Physics"]
+    assert item.type_score.type_correct == 1
+    assert item.failure_category == ""
+
+
+def test_type_evaluation_marks_mismatch_without_using_number_or_metadata():
+    item = EvaluationResult.from_ocr_response(
+        Sample(2, "a.png", 0, "Physics", True),
+        {
+            "status": 200,
+            "data": [{"type": "E-codes", "number": "Physics", "country": "Physics"}],
+            "imageStatus": ["ok"],
+        },
+        task="type",
+    )
+
+    assert item.actual_numbers == ["Physics"]
+    assert item.actual_types == ["E-codes"]
+    assert item.type_score.type_total == 1
+    assert item.type_score.type_correct == 0
+    assert item.failure_category == "type_mismatch"
+
+
+def test_type_evaluation_excludes_missing_type_values():
+    item = EvaluationResult.from_ocr_response(
+        Sample(2, "a.png", 0, "Physics", True),
+        {"status": 200, "data": [{"number": "Physics"}], "imageStatus": ["ok"]},
+        task="type",
+    )
+
+    assert item.type_score.type_total == 0
+    assert item.type_score.not_evaluable_reason == "missing_type"
+    assert item.failure_category == "not_evaluable"
+
+
+def test_type_evaluation_excludes_infrastructure_failures():
+    item = EvaluationResult.from_ocr_response(
+        Sample(2, "a.png", 0, "Physics", True),
+        {"status": 500, "data": [{"type": "Physics"}], "imageStatus": ["ok"]},
+        task="type",
+    )
+
+    assert item.type_score.type_total == 0
+    assert item.type_score.not_evaluable_reason == "ai_error"
+    assert item.failure_category == "not_evaluable"
 
 
 def test_evaluation_classifies_missing_code():
