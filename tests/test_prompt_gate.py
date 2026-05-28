@@ -7,7 +7,12 @@ def _prompt(
     prefix="code rules",
     simple="simple output",
     complex_rules="## 类型判断\nold type\n## 输出格式\nnumber output",
-    complet_rules="## 类型判断\nold type\n## 字段说明\nbrand\nnumber",
+    complet_rules=(
+        "## 类型判断\nold type\n## 字段说明\n"
+        "| 字段 | 判断规则 |\n|------|----------|\n"
+        "| brand | protected brand |\n| number | code number |\n"
+        "## 输出格式\nold output"
+    ),
     detect="detect rules",
 ):
     return f"""
@@ -44,11 +49,36 @@ def test_validate_prompt_file_accepts_code_detect_change(tmp_path):
     validate_prompt_file(proposed, node_binary="node", task="code", baseline_path=accepted)
 
 
+def test_validate_prompt_file_accepts_code_output_rule_changes(tmp_path):
+    accepted = tmp_path / "accepted.js"
+    proposed = tmp_path / "proposed.js"
+    _write_prompt(accepted)
+    _write_prompt(
+        proposed,
+        complex_rules="## 类型判断\nold type\n## 输出格式\nnumber output plus stricter code extraction",
+        complet_rules=(
+            "## 类型判断\nold type\n## 字段说明\n"
+            "| 字段 | 判断规则 |\n|------|----------|\n"
+            "| brand | protected brand |\n| number | accepts visible hyphens |\n"
+            "## 输出格式\ncode output"
+        ),
+    )
+
+    validate_prompt_file(proposed, node_binary="node", task="code", baseline_path=accepted)
+
+
 @pytest.mark.parametrize(
     "changed",
     [
         {"complex_rules": "## 类型判断\nnew type\n## 输出格式\nnumber output"},
-        {"complet_rules": "## 类型判断\nold type\n## 字段说明\nbrand changed\nnumber"},
+        {
+            "complet_rules": (
+                "## 类型判断\nold type\n## 字段说明\n"
+                "| 字段 | 判断规则 |\n|------|----------|\n"
+                "| brand | changed |\n| number | code number |\n"
+                "## 输出格式\nold output"
+            )
+        },
     ],
 )
 def test_validate_prompt_file_rejects_code_type_or_metadata_change(tmp_path, changed):
@@ -68,7 +98,12 @@ def test_validate_prompt_file_accepts_type_rule_changes_only(tmp_path):
     _write_prompt(
         proposed,
         complex_rules="## 类型判断\nnew type\n## 输出格式\nnumber output",
-        complet_rules="## 类型判断\nnew type\n## 字段说明\nbrand\nnumber",
+        complet_rules=(
+            "## 类型判断\nnew type\n## 字段说明\n"
+            "| 字段 | 判断规则 |\n|------|----------|\n"
+            "| brand | protected brand |\n| number | code number |\n"
+            "## 输出格式\nold output"
+        ),
     )
 
     validate_prompt_file(proposed, node_binary="node", task="type", baseline_path=accepted)
@@ -79,7 +114,14 @@ def test_validate_prompt_file_accepts_type_rule_changes_only(tmp_path):
     [
         {"detect": "changed detect"},
         {"prefix": "changed number output"},
-        {"complet_rules": "## 类型判断\nold type\n## 字段说明\nbrand changed\nnumber"},
+        {
+            "complet_rules": (
+                "## 类型判断\nold type\n## 字段说明\n"
+                "| 字段 | 判断规则 |\n|------|----------|\n"
+                "| brand | changed |\n| number | code number |\n"
+                "## 输出格式\nold output"
+            )
+        },
     ],
 )
 def test_validate_prompt_file_rejects_type_forbidden_changes(tmp_path, changed):

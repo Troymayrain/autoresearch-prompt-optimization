@@ -14,6 +14,8 @@ REQUIRED_EXPORTS = {
 }
 TYPE_RULE_START = "## 类型判断"
 TYPE_RULE_END_MARKERS = ("## 输出格式", "## 字段说明")
+METADATA_START = "## 字段说明"
+METADATA_END = "## 输出格式"
 
 
 class PromptGateError(RuntimeError):
@@ -230,17 +232,49 @@ def _without_type_rules(value: str) -> str:
     return value[:start] + value[end:]
 
 
+def _type_rules(value: str) -> str:
+    start = value.find(TYPE_RULE_START)
+    if start < 0:
+        return ""
+    search_from = start + len(TYPE_RULE_START)
+    ends = []
+    for marker in TYPE_RULE_END_MARKERS:
+        marker_index = value.find(marker, search_from)
+        if marker_index >= 0:
+            ends.append(marker_index)
+    end = min(ends) if ends else len(value)
+    return value[start:end]
+
+
+def _protected_metadata(value: str) -> str:
+    start = value.find(METADATA_START)
+    if start < 0:
+        return ""
+    end = value.find(METADATA_END, start + len(METADATA_START))
+    section = value[start : len(value) if end < 0 else end]
+    protected_lines = []
+    for line in section.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and cells[0] == "number":
+            continue
+        protected_lines.append(line)
+    return "\n".join(protected_lines)
+
+
 def _validate_task_boundary(
     proposed: dict[str, str],
     baseline: dict[str, str],
     task: TaskName,
 ) -> None:
     if task == "code":
-        changed = [
-            key for key in ("PROMPT_COMPLEX", "PROMPT_COMPLET") if proposed[key] != baseline[key]
-        ]
+        changed = []
+        for key in ("PROMPT_COMPLEX", "PROMPT_COMPLET"):
+            if _type_rules(proposed[key]) != _type_rules(baseline[key]):
+                changed.append(key)
+        if _protected_metadata(proposed["PROMPT_COMPLET"]) != _protected_metadata(baseline["PROMPT_COMPLET"]):
+            changed.append("PROMPT_COMPLET")
         if changed:
-            raise PromptGateError(f"code task cannot change protected exports: {', '.join(changed)}")
+            raise PromptGateError(f"code task cannot change protected sections: {', '.join(sorted(set(changed)))}")
         return
 
     if task == "type":
