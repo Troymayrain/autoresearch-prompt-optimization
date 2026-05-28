@@ -16,6 +16,30 @@ class OptimizerProposal:
     prompt_file: str
 
 
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def _optimizer_timeout() -> float | None:
+    value = _optional_env("OPTIMIZER_TIMEOUT_SECONDS")
+    return None if value is None else float(value)
+
+
+def _client_kwargs(api_key_name: str, base_url_name: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"api_key": os.getenv(api_key_name)}
+    base_url = _optional_env(base_url_name)
+    timeout = _optimizer_timeout()
+    if base_url:
+        kwargs["base_url"] = base_url
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return kwargs
+
+
 def _mutation_boundary(task: TaskName) -> dict[str, list[str]]:
     if task == "code":
         return {
@@ -144,7 +168,7 @@ def call_optimizer_llm(provider: str, model: str, system: str, user: str) -> Opt
     if normalized == "openai":
         from openai import OpenAI
 
-        response = OpenAI(api_key=os.getenv("OPENAI_API_KEY")).chat.completions.create(
+        response = OpenAI(**_client_kwargs("OPENAI_API_KEY", "OPENAI_BASE_URL")).chat.completions.create(
             model=model,
             temperature=0,
             messages=[
@@ -157,7 +181,9 @@ def call_optimizer_llm(provider: str, model: str, system: str, user: str) -> Opt
     if normalized == "anthropic":
         import anthropic
 
-        response = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY")).messages.create(
+        response = anthropic.Anthropic(
+            **_client_kwargs("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL")
+        ).messages.create(
             model=model,
             max_tokens=8192,
             temperature=0,

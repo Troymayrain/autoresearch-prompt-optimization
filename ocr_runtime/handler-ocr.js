@@ -71,6 +71,10 @@ const OCR_RESPONSE_SCHEMAS = {
   complete: OCR_COMPLETE_RESPONSE_SCHEMA,
 };
 
+const CARD_CODE_MIN_LENGTH = 4;
+const CARD_CODE_MAX_LENGTH = 45;
+const CARD_CODE_SEGMENT_RE = /^[A-Za-z0-9]+$/;
+
 /**
  * 获取 OCR 识别提示词
  * @param {string} type - 'simple' | 'complex' | 'complete'
@@ -95,6 +99,22 @@ function buildOcrFallbackResult(type) {
 
 function recordModel(models, model) {
   if (Array.isArray(models) && typeof model === 'string' && model) models.push(model);
+}
+
+function isCompleteCardCodeCandidate(value) {
+  return typeof value === 'string' &&
+    value.length > CARD_CODE_MIN_LENGTH &&
+    value.length < CARD_CODE_MAX_LENGTH &&
+    CARD_CODE_SEGMENT_RE.test(value);
+}
+
+function splitPlusDelimitedCardCode(number) {
+  if (typeof number !== 'string' || !number.includes('+')) return [number];
+
+  const segments = number.split('+').map(segment => segment.trim());
+  // `+` 是业务定义的卡码边界，不是卡码字符；任一侧不完整时丢弃整串，避免脏结果混入。
+  if (segments.length < 2 || !segments.every(isCompleteCardCodeCandidate)) return [];
+  return segments;
 }
 
 // 第一步：检测图片是否包含卡码
@@ -170,24 +190,39 @@ function buildOCRData({ type, fileUrlArray, fileInfoMap, uniqueFiles, resultByFi
   const mergedResults = finalResults.flat();
   const filterComplexResults = (items) => items.filter((item, index, self) =>
     item.number &&
-    item.number.length > 4 &&
-    item.number.length < 40 &&
+    item.number.length > CARD_CODE_MIN_LENGTH &&
+    item.number.length < CARD_CODE_MAX_LENGTH &&
     index === self.findIndex(t => t.number?.toUpperCase() === item.number?.toUpperCase())
   );
 
   if (type === 'complex' || type === 'complete') {
-    return filterComplexResults(mergedResults);
+    const expandedResults = mergedResults.flatMap(item => {
+      if (!item || typeof item !== 'object') return [item];
+      return splitPlusDelimitedCardCode(item.number)
+        .map(number => ({ ...item, number }));
+    });
+    return filterComplexResults(expandedResults);
   }
 
   return mergedResults
+    .flatMap(item => {
+      const value = typeof item === 'string' ? item : (item?.number || item);
+      return splitPlusDelimitedCardCode(value);
+    })
     .map(item => typeof item === 'string' ? item.toUpperCase() : (item?.number || item))
     .filter((value, index, self) => {
       const str = typeof value === 'string' ? value : '';
-      return str !== '' && !str.startsWith('ERROR:') && str.length > 4 && str.length < 40 && self.indexOf(value) === index;
+      return str !== '' &&
+        !str.startsWith('ERROR:') &&
+        str.length > CARD_CODE_MIN_LENGTH &&
+        str.length < CARD_CODE_MAX_LENGTH &&
+        self.indexOf(value) === index;
     });
 }
 
-async function processOcrRequest(rawEvent) {
+async function processOcrRequest(rawEvent, overrides) {
+  const notify = overrides && typeof overrides.notifyResult === 'function'
+    ? overrides.notifyResult : notifyResult;
   let s3Url = [];
   let imageStatus = [];
   let providers = [];
@@ -278,7 +313,7 @@ async function processOcrRequest(rawEvent) {
     };
 
     if (shouldUploadToS3) returnData.s3Url = s3Url;
-    await notifyResult(notifyUrl, event, returnData, true);
+    await notify(notifyUrl, event, returnData, true);
 
     return {
       statusCode: 200,
@@ -293,7 +328,7 @@ async function processOcrRequest(rawEvent) {
       error: error.message || String(error)
     };
 
-    await notifyResult(notifyUrl, event, returnData, false);
+    await notify(notifyUrl, event, returnData, false);
 
     return {
       statusCode,

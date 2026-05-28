@@ -1,8 +1,8 @@
 # OCR Runtime Source
 
 - Source repository: /Users/chushimima1234/projects/nodejs/code-ocr
-- Source commit: 31291ba6304f01309815aa254021367a5144df96
-- Snapshot date: 2026-05-07
+- Source commit: 266545823d7d69cf92e9a8530b180b58e21314a0
+- Snapshot date: 2026-05-27
 
 ## Copied Files
 
@@ -10,6 +10,7 @@
 - handler-ocr.js
 - shared.js
 - utils.js
+- local-images.js
 - log-sanitizer.js
 - prompts/ocr.js copied to ../prompts/ocr.js
 

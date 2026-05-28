@@ -52,8 +52,8 @@ class OptimizerConfig:
             no_card_failure_threshold=_float_env("NO_CARD_FAILURE_THRESHOLD", 5.0),
             prompt_path=Path(_str_env("PROMPT_PATH", "prompts/ocr.js")),
             runs_dir=Path(_str_env("RUNS_DIR", "runs")),
-            optimizer_provider=_str_env("OPTIMIZER_PROVIDER", "gemini").lower(),
-            optimizer_model=_str_env("OPTIMIZER_MODEL", "gemini-2.5-flash"),
+            optimizer_provider=_str_env("OPTIMIZER_PROVIDER", "openai").lower(),
+            optimizer_model=_str_env("OPTIMIZER_MODEL", "gpt-5.5"),
             node_binary=_str_env("NODE_BINARY", "node"),
             ocr_runner_path=Path(_str_env("OCR_RUNNER_PATH", "ocr_runtime/run_ocr.js")),
         )

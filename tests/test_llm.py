@@ -149,6 +149,34 @@ def test_call_optimizer_llm_openai_parses_response_without_network(monkeypatch):
     assert proposal == OptimizerProposal("h", "e", "r", "p")
 
 
+def test_call_optimizer_llm_openai_uses_relay_base_url_and_timeout(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            message = types.SimpleNamespace(content=_proposal_json())
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setenv("OPENAI_API_KEY", "relay-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://relay.example.com/v1")
+    monkeypatch.setenv("OPTIMIZER_TIMEOUT_SECONDS", "123.5")
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+
+    proposal = call_optimizer_llm("openai", "model", "system", "user")
+
+    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert captured == {
+        "api_key": "relay-key",
+        "base_url": "https://relay.example.com/v1",
+        "timeout": 123.5,
+    }
+
+
 def test_call_optimizer_llm_anthropic_parses_response_without_network(monkeypatch):
     class FakeMessages:
         def create(self, **kwargs):
@@ -163,3 +191,30 @@ def test_call_optimizer_llm_anthropic_parses_response_without_network(monkeypatc
     proposal = call_optimizer_llm("anthropic", "model", "system", "user")
 
     assert proposal == OptimizerProposal("h", "e", "r", "p")
+
+
+def test_call_optimizer_llm_anthropic_uses_relay_base_url_and_timeout(monkeypatch):
+    captured = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text=_proposal_json())])
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.messages = FakeMessages()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "relay-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://relay.example.com")
+    monkeypatch.setenv("OPTIMIZER_TIMEOUT_SECONDS", "123.5")
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=FakeAnthropic))
+
+    proposal = call_optimizer_llm("anthropic", "model", "system", "user")
+
+    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert captured == {
+        "api_key": "relay-key",
+        "base_url": "https://relay.example.com",
+        "timeout": 123.5,
+    }

@@ -1,7 +1,8 @@
 const axios = require('axios');
 const crypto = require('crypto');
-const { downloadImageToBase64, uploadToS3, listLocalImageFiles } = require('./utils');
+const { downloadImageToBase64, uploadToS3 } = require('./utils');
 const { sanitizeRecognitionPayload } = require('./log-sanitizer');
+const { listLocalImageFiles } = require('./local-images');
 
 function stableSecretFingerprint(secret) {
   if (typeof secret !== 'string') return null;
@@ -228,9 +229,7 @@ function validateRequestForMode(event, mode) {
 
 function getFileUrlArray(event) {
   if (USE_LOCAL_IMAGES) {
-    const files = listLocalImageFiles();
-    console.log('本地模式：从 images 目录读取图片，共', files.length, '张图片');
-    return files;
+    return listLocalImageFiles();
   }
 
   if (typeof event.image !== 'string') {

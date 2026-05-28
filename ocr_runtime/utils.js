@@ -5,6 +5,7 @@ const fs = require("fs");
 const crypto = require('crypto');
 const imageSize = require('image-size');
 const sizeOf = typeof imageSize === 'function' ? imageSize : imageSize.default;
+const { getLocalImagesDir, listLocalImageFiles } = require('./local-images');
 
 const S3_READ_REGION = (process.env.S3_READ_REGION || '').trim() || 'eu-central-1';
 const S3_WRITE_REGION = (process.env.S3_WRITE_REGION || '').trim() || 'ap-east-1';
@@ -42,40 +43,33 @@ function getS3WriteClient() {
 }
 
 // 本地 images 目录路径
-const LOCAL_IMAGES_DIR = path.join(__dirname, 'images');
+const LOCAL_IMAGES_DIR = getLocalImagesDir();
 
-const LOCAL_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.tif', '.tiff']);
-
-const listLocalImageFiles = () => {
-  let entries;
-  try {
-    entries = fs.readdirSync(LOCAL_IMAGES_DIR, { withFileTypes: true });
-  } catch (error) {
-    const message = error && typeof error === 'object' ? (error.message || String(error)) : String(error);
-    throw new Error(`读取本地 images 目录失败: ${LOCAL_IMAGES_DIR} (${message})`);
+// 本地调试允许传子目录相对路径，但绝不允许 ../ 逃逸出 images 根目录读取任意文件。
+function resolveLocalImagePath(requestedPath) {
+  const value = String(requestedPath || '');
+  const candidate = path.resolve(LOCAL_IMAGES_DIR, value);
+  const root = path.resolve(LOCAL_IMAGES_DIR);
+  if ((candidate === root || candidate.startsWith(`${root}${path.sep}`)) && fs.existsSync(candidate)) {
+    return candidate;
   }
 
-  return entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .filter((name) => name && !name.startsWith('.'))
-    .filter((name) => LOCAL_IMAGE_EXTS.has(path.extname(name).toLowerCase()))
-    .sort();
-};
+  const fileName = path.basename(value);
+  const allFiles = listLocalImageFiles(LOCAL_IMAGES_DIR);
+  const match = allFiles.find(f => path.basename(String(f)) === fileName);
+  if (!match) {
+    throw new Error(`本地图片不存在: ${fileName}`);
+  }
+  return path.join(LOCAL_IMAGES_DIR, String(match));
+}
 
 // 从本地 images 目录获取图片内容
 const getImageFromLocal = async (url) => {
   try {
-    // 从 url 中提取文件名
-    const fileName = path.basename(url);
-    const localPath = path.join(LOCAL_IMAGES_DIR, fileName);
+    const localPath = resolveLocalImagePath(url);
+    const fileName = path.basename(String(url || ''));
 
-    console.log('尝试从本地读取图片:', localPath);
-
-    if (!fs.existsSync(localPath)) {
-      throw new Error(`本地图片不存在: ${localPath}`);
-    }
-
+    console.log('从本地读取图片:', localPath);
     const imageData = fs.readFileSync(localPath);
     console.log('成功从本地读取图片:', fileName, '大小:', imageData.length, 'bytes');
     return imageData;
@@ -415,5 +409,5 @@ const decodeBase64ToJson = (base64Str) => {
   }
 }
 module.exports = {
-  downloadImageToBase64, uploadToS3, isBase64, decodeBase64ToJson, listLocalImageFiles
+  downloadImageToBase64, uploadToS3, isBase64, decodeBase64ToJson
 };

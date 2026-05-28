@@ -4,6 +4,7 @@ run.log
 .env
 __pycache__/
 *.pyc
+.venv/
 *.html
 runs/*
 !runs/.gitkeep
@@ -13,3 +14,9 @@ datasets/*.csv
 !datasets/.gitkeep
 ocr_runtime/node_modules/
 ocr_runtime/package-lock.json
+.codegraph/
+docs/
+AGENTS.md
+tests/
+ocr_runtime/test/
+.DS_Store
