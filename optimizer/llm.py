@@ -13,6 +13,7 @@ class OptimizerProposal:
     hypothesis: str
     expected_effect: str
     risk: str
+    target_failures: list[str]
     prompt_file: str
 
 
@@ -106,11 +107,19 @@ def parse_optimizer_response(text: str) -> OptimizerProposal:
     ]
     if missing:
         raise ValueError(f"optimizer response missing: {', '.join(missing)}")
+    target_failures = data.get("target_failures")
+    if (
+        not isinstance(target_failures, list)
+        or not target_failures
+        or any(not isinstance(item, str) or not item.strip() for item in target_failures)
+    ):
+        raise ValueError("optimizer response target_failures must be a non-empty list of strings")
 
     return OptimizerProposal(
         hypothesis=data["hypothesis"].strip(),
         expected_effect=data["expected_effect"].strip(),
         risk=data["risk"].strip(),
+        target_failures=[item.strip() for item in target_failures],
         prompt_file=data["prompt_file"],
     )
 
@@ -126,8 +135,10 @@ def build_optimizer_messages(
     boundary = _mutation_boundary(task)
     system = (
         "You improve a gift card OCR prompt. Return JSON only with exactly "
-        "hypothesis, expected_effect, risk, and prompt_file. Only the prompt file "
-        "may change; do not change scoring, runtime code, datasets, or post-processing. "
+        "hypothesis, expected_effect, risk, target_failures, and prompt_file. "
+        "target_failures must be a non-empty JSON array of row numbers or "
+        "failure categories from the provided evidence. Only the prompt file may "
+        "change; do not change scoring, runtime code, datasets, or post-processing. "
         f"Selected task: {task}. Allowed changes: {', '.join(boundary['allowed'])}. "
         f"Forbidden changes: {', '.join(boundary['forbidden'])}. "
         "prompt_file must be the complete JavaScript file content starting with module.exports. "
@@ -141,6 +152,10 @@ def build_optimizer_messages(
             "summary": summary,
             "failure_clusters": failure_clusters,
             "representative_failures": failures[:30],
+            "target_failure_guidance": (
+                "Set target_failures to row numbers or failure_category values from "
+                "representative_failures and failure_clusters."
+            ),
             "recent_diffs": recent_diffs[-5:],
         },
         ensure_ascii=False,

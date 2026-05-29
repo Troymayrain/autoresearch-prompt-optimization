@@ -8,32 +8,56 @@ from optimizer.llm import OptimizerProposal, build_optimizer_messages, call_opti
 
 
 def test_parse_optimizer_response_extracts_json_object():
-    text = '```json\n{"hypothesis":"h","expected_effect":"e","risk":"r","prompt_file":"module.exports={}"}\n```'
+    text = (
+        '```json\n{"hypothesis":"h","expected_effect":"e","risk":"r",'
+        '"target_failures":["row 2"],"prompt_file":"module.exports={}"}\n```'
+    )
 
     proposal = parse_optimizer_response(text)
 
-    assert proposal == OptimizerProposal("h", "e", "r", "module.exports={}")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "module.exports={}")
 
 
 def test_parse_optimizer_response_rejects_missing_prompt():
     with pytest.raises(ValueError, match="prompt_file"):
-        parse_optimizer_response('{"hypothesis":"h","expected_effect":"e","risk":"r"}')
+        parse_optimizer_response('{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":["row 2"]}')
+
+
+def test_parse_optimizer_response_rejects_missing_target_failures():
+    with pytest.raises(ValueError, match="target_failures"):
+        parse_optimizer_response('{"hypothesis":"h","expected_effect":"e","risk":"r","prompt_file":"p"}')
+
+
+def test_parse_optimizer_response_rejects_empty_target_failures():
+    with pytest.raises(ValueError, match="target_failures"):
+        parse_optimizer_response(
+            '{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":[],"prompt_file":"p"}'
+        )
+
+
+def test_parse_optimizer_response_rejects_non_string_target_failures():
+    with pytest.raises(ValueError, match="target_failures"):
+        parse_optimizer_response(
+            '{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":["row 2",3],"prompt_file":"p"}'
+        )
 
 
 def test_parse_optimizer_response_trims_fields_and_ignores_metadata():
     proposal = parse_optimizer_response(
-        '{"hypothesis":" h ","expected_effect":" e ","risk":" r ","prompt_file":" p\\n","notes":"drop"}'
+        '{"hypothesis":" h ","expected_effect":" e ","risk":" r ","target_failures":[" row 2 "],'
+        '"prompt_file":" p\\n","notes":"drop"}'
     )
 
-    assert proposal == OptimizerProposal("h", "e", "r", " p\n")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], " p\n")
 
 
 def test_parse_optimizer_response_extracts_prefixed_suffixed_json_object():
     proposal = parse_optimizer_response(
-        'prefix {"hypothesis":"h","expected_effect":"e","risk":"r","prompt_file":"p"} suffix'
+        'prefix {"hypothesis":"h","expected_effect":"e","risk":"r",'
+        '"target_failures":["wrong_code"],"prompt_file":"p"} suffix'
     )
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["wrong_code"], "p")
 
 
 def test_parse_optimizer_response_rejects_text_without_json_object():
@@ -49,7 +73,8 @@ def test_parse_optimizer_response_rejects_malformed_json_object():
 def test_parse_optimizer_response_rejects_non_string_fields():
     with pytest.raises(ValueError, match="risk"):
         parse_optimizer_response(
-            '{"hypothesis":"h","expected_effect":"e","risk":1,"prompt_file":"module.exports={}"}'
+            '{"hypothesis":"h","expected_effect":"e","risk":1,'
+            '"target_failures":["row 2"],"prompt_file":"module.exports={}"}'
         )
 
 
@@ -95,6 +120,21 @@ def test_build_optimizer_messages_includes_type_boundary():
     assert "number output" in data["mutation_boundary"]["forbidden"]
 
 
+def test_build_optimizer_messages_requests_target_failure_evidence():
+    system, user = build_optimizer_messages(
+        "prompt",
+        {},
+        {"wrong_code": 2},
+        [{"row_number": 7, "failure_category": "wrong_code"}],
+        [],
+    )
+
+    data = json.loads(user)
+    assert "target_failures" in system
+    assert "row" in data["target_failure_guidance"]
+    assert "failure_category" in data["target_failure_guidance"]
+
+
 def test_call_optimizer_llm_rejects_unknown_provider_without_network():
     with pytest.raises(ValueError, match="unsupported optimizer provider"):
         call_optimizer_llm("local", "model", "system", "user")
@@ -106,6 +146,7 @@ def _proposal_json() -> str:
             "hypothesis": "h",
             "expected_effect": "e",
             "risk": "r",
+            "target_failures": ["row 2"],
             "prompt_file": "p",
         }
     )
@@ -129,7 +170,7 @@ def test_call_optimizer_llm_gemini_parses_response_without_network(monkeypatch):
 
     proposal = call_optimizer_llm("gemini", "model", "system", "user")
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "p")
 
 
 def test_call_optimizer_llm_openai_parses_response_without_network(monkeypatch):
@@ -146,7 +187,7 @@ def test_call_optimizer_llm_openai_parses_response_without_network(monkeypatch):
 
     proposal = call_optimizer_llm("openai", "model", "system", "user")
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "p")
 
 
 def test_call_optimizer_llm_openai_uses_relay_base_url_and_timeout(monkeypatch):
@@ -169,7 +210,7 @@ def test_call_optimizer_llm_openai_uses_relay_base_url_and_timeout(monkeypatch):
 
     proposal = call_optimizer_llm("openai", "model", "system", "user")
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "p")
     assert captured == {
         "api_key": "relay-key",
         "base_url": "https://relay.example.com/v1",
@@ -190,7 +231,7 @@ def test_call_optimizer_llm_anthropic_parses_response_without_network(monkeypatc
 
     proposal = call_optimizer_llm("anthropic", "model", "system", "user")
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "p")
 
 
 def test_call_optimizer_llm_anthropic_uses_relay_base_url_and_timeout(monkeypatch):
@@ -212,7 +253,7 @@ def test_call_optimizer_llm_anthropic_uses_relay_base_url_and_timeout(monkeypatc
 
     proposal = call_optimizer_llm("anthropic", "model", "system", "user")
 
-    assert proposal == OptimizerProposal("h", "e", "r", "p")
+    assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "p")
     assert captured == {
         "api_key": "relay-key",
         "base_url": "https://relay.example.com",

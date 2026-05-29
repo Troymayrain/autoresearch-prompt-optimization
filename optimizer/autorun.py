@@ -109,9 +109,10 @@ def _gate_retry_user(original_user: str, gate_error: str, invalid_prompt: str) -
             "gate_error": gate_error,
             "invalid_prompt_file_prefix": invalid_prompt[:2000],
             "retry_instruction": (
-                "Return JSON only. The prompt_file field must be the complete valid "
-                "CommonJS JavaScript file, starting with module.exports = {. Do not return "
-                "a unified diff, patch, markdown fence, or excerpt."
+                "Return JSON only with hypothesis, expected_effect, risk, target_failures, "
+                "and prompt_file. The prompt_file field must be the complete valid CommonJS "
+                "JavaScript file, starting with module.exports = {. Do not return a unified "
+                "diff, patch, markdown fence, or excerpt."
             ),
         },
         ensure_ascii=False,

@@ -68,8 +68,8 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
     seen_accuracies = []
     proposals = iter(
         [
-            OptimizerProposal("h", "e", "r", "bad"),
-            OptimizerProposal("h", "e", "r", "good"),
+            OptimizerProposal("h", "e", "r", ["row 2"], "bad"),
+            OptimizerProposal("h", "e", "r", ["row 2"], "good"),
         ]
     )
 
@@ -135,8 +135,8 @@ async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_pa
     )
     proposals = iter(
         [
-            OptimizerProposal("h1", "e1", "r1", "--- prompt.js\n+++ prompt.js\n@@\n+bad"),
-            OptimizerProposal("h2", "e2", "r2", "new-valid"),
+            OptimizerProposal("h1", "e1", "r1", ["row 2"], "--- prompt.js\n+++ prompt.js\n@@\n+bad"),
+            OptimizerProposal("h2", "e2", "r2", ["row 2"], "new-valid"),
         ]
     )
     seen_users = []
@@ -215,7 +215,7 @@ async def test_autorun_uses_type_metric_for_keep_commit_and_artifacts(tmp_path, 
     monkeypatch.setattr(
         autorun,
         "call_optimizer_llm",
-        lambda provider, model, system, user: OptimizerProposal("h", "e", "r", "new-valid"),
+        lambda provider, model, system, user: OptimizerProposal("h", "e", "r", ["row 2"], "new-valid"),
     )
     monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
 
@@ -263,8 +263,8 @@ async def test_autorun_records_gate_failure_without_running_dev_or_full(tmp_path
     run_prompts = []
     proposals = iter(
         [
-            OptimizerProposal("h1", "e1", "r1", "bad-boundary"),
-            OptimizerProposal("h2", "e2", "r2", "bad-boundary"),
+            OptimizerProposal("h1", "e1", "r1", ["row 2"], "bad-boundary"),
+            OptimizerProposal("h2", "e2", "r2", ["row 2"], "bad-boundary"),
         ]
     )
 
