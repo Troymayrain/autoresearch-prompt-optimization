@@ -4,7 +4,7 @@ from openpyxl import load_workbook
 
 from optimizer.dataset import Sample
 from optimizer.evaluation import EvaluationResult
-from optimizer.reporting import write_run_artifacts
+from optimizer.reporting import write_gate_artifact, write_run_artifacts
 
 
 def _xlsx_headers(path):
@@ -37,6 +37,7 @@ def test_write_run_artifacts_creates_summary_failures_and_excel(tmp_path):
     assert json.loads((tmp_path / "failures.jsonl").read_text())["task"] == "code"
     assert json.loads((tmp_path / "failure-clusters.json").read_text())["task"] == "code"
     assert (tmp_path / "results.xlsx").exists()
+    assert not (tmp_path / "gate.json").exists()
     assert _xlsx_headers(tmp_path / "results.xlsx") == [
         "task",
         "row_number",
@@ -122,3 +123,31 @@ def test_write_type_run_artifacts_uses_type_summary(tmp_path):
         "failure_category",
         "image_status",
     ]
+
+
+def test_write_gate_artifact_persists_decision_and_redacts_secrets(tmp_path):
+    write_gate_artifact(
+        tmp_path,
+        {
+            "task": "code",
+            "phase": "regression",
+            "decision": "discard",
+            "checks": [{"name": "business_accuracy_not_decreased", "passed": False}],
+            "reason": "business_accuracy decreased from 100.0 to 50.0",
+            "metrics": {
+                "accepted": {"business_accuracy": 100.0},
+                "candidate": {"business_accuracy": 50.0, "api_key": "secret-value"},
+            },
+            "authorization": "Bearer secret",
+        },
+    )
+
+    gate = json.loads((tmp_path / "gate.json").read_text())
+    assert gate["task"] == "code"
+    assert gate["phase"] == "regression"
+    assert gate["decision"] == "discard"
+    assert gate["checks"] == [{"name": "business_accuracy_not_decreased", "passed": False}]
+    assert gate["reason"] == "business_accuracy decreased from 100.0 to 50.0"
+    assert gate["metrics"]["accepted"]["business_accuracy"] == 100.0
+    assert gate["metrics"]["candidate"]["api_key"] == "[REDACTED]"
+    assert gate["authorization"] == "[REDACTED]"

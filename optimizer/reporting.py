@@ -82,6 +82,15 @@ def _summary(task: TaskName, phase: str, results: Sequence[EvaluationResult]) ->
     return summary
 
 
+def write_gate_artifact(run_dir: Path, payload: dict) -> None:
+    required = ("task", "phase", "decision", "checks", "reason", "metrics")
+    missing = [key for key in required if key not in payload]
+    if missing:
+        raise ValueError(f"gate payload missing: {', '.join(missing)}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(run_dir / "gate.json", _sanitize(payload))
+
+
 def _write_results_xlsx(path: Path, results: Sequence[EvaluationResult], task: TaskName) -> None:
     wb = Workbook()
     ws = wb.active
