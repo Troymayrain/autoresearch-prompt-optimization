@@ -40,3 +40,4 @@ def test_autorun_help_requires_task_choice():
 
     assert "--task {code,type}" in result.stdout
     assert "--dataset DATASET" in result.stdout
+    assert "--regression-dataset REGRESSION_DATASET" in result.stdout

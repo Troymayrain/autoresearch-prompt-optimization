@@ -123,6 +123,9 @@ async def main_async(args: argparse.Namespace) -> int:
     task = args.task
     cfg = OptimizerConfig.from_env()
     samples = load_dataset(args.dataset, task=task)
+    regression_dataset = getattr(args, "regression_dataset", None)
+    if regression_dataset is not None:
+        load_dataset(regression_dataset, task=task)
     split = split_samples(samples, cfg.dev_sample_size)
     runner = OcrRunner(cfg.node_binary, cfg.ocr_runner_path)
     experiment_dir = cfg.runs_dir / f"card-ocr-prompt-opt-{task}"
@@ -280,6 +283,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", required=True, choices=("code", "type"))
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--regression-dataset")
     return asyncio.run(main_async(parser.parse_args()))
 
 

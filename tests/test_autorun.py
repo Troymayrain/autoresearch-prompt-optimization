@@ -299,3 +299,92 @@ async def test_autorun_records_gate_failure_without_running_dev_or_full(tmp_path
     assert summary["phase"] == "gate_failed"
     assert summary["task"] == "code"
     assert "code task cannot change protected exports" in response["gate_error"]
+
+
+@pytest.mark.asyncio
+async def test_autorun_loads_regression_dataset_with_selected_task_schema(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("valid", encoding="utf-8")
+    sample = Sample(2, "a.png", 0, "Physics", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=0,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    loaded = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+
+    def fake_load_dataset(path, task):
+        loaded.append((path, task))
+        return [sample]
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"type": "Physics", "number": "wrong"}], "imageStatus": ["ok"]},
+                task="type",
+            )
+            for item in samples
+        ]
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="type")
+    )
+
+    assert loaded == [("dataset.xlsx", "type"), ("regression.xlsx", "type")]
+
+
+@pytest.mark.asyncio
+async def test_autorun_fails_fast_when_regression_dataset_is_malformed(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("valid", encoding="utf-8")
+    sample = Sample(2, "a.png", 0, "A", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=0,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+
+    def fake_load_dataset(path, task):
+        if path == "regression.xlsx":
+            raise ValueError("missing required columns: md5_card_number")
+        return [sample]
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(autorun, "run_once", lambda *args, **kwargs: pytest.fail("should fail before OCR"))
+
+    with pytest.raises(ValueError, match="missing required columns: md5_card_number"):
+        await autorun.main_async(
+            argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="code")
+        )
