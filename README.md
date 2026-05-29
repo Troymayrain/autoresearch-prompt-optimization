@@ -38,6 +38,19 @@ Type optimization dataset columns:
 `PhysicsPhysics` for two physical-card images. It does not mean `cardType`,
 brand, country, currency, or denomination.
 
+Regression-gated runs may add an explicit guard dataset:
+
+```bash
+uv run python -m optimizer.autorun --task code --dataset datasets/IT-ST-RZ(TB)_500.xlsx --regression-dataset datasets/code-regression.xlsx
+uv run python -m optimizer.autorun --task type --dataset datasets/type_ocr_500.xlsx --regression-dataset datasets/type-regression.xlsx
+```
+
+`--regression-dataset` is optional. When omitted, optimization still runs and
+accepted candidate artifacts record `regression_not_configured`. When supplied,
+the file must exist and pass the selected task schema before OCR work continues.
+Code regression data uses `card_image`, `origin`, and `md5_card_number`; type
+regression data uses `card_image`, `origin`, and `golden_type`.
+
 ## Run
 
 ```bash
@@ -64,8 +77,11 @@ Each iteration:
 3. validates the generated JavaScript prompt file,
 4. runs the dev split,
 5. runs the full dataset only if dev accuracy improves,
-6. commits the prompt only if the selected full metric improves,
-7. restores the previous prompt content otherwise.
+6. runs the regression dataset only if one was supplied and the full metric
+   improves,
+7. commits the prompt only if the selected full metric improves without
+   regressing the accepted regression baseline,
+8. restores the previous prompt content otherwise.
 
 Code business accuracy follows the `card-type` matching rule: exact match
 first, then expected-order `includes` matching, with each actual OCR code
@@ -78,6 +94,18 @@ excluded from the selected accuracy denominator. Type rows without OCR `type`
 values are reported as `not_evaluable`; type optimization is not allowed to fix
 detection, code extraction, `cardType`, country, currency, denomination, or
 number output.
+
+Regression failure is an accept-gate failure, not a stop condition. A candidate
+that improves the full dataset but regresses the guard dataset is discarded,
+the prompt file is restored, plateau tracking increments, and no commit is
+created. The run directory keeps the candidate prompt, prompt diff, full
+results, regression summary, regression results workbook, optimizer request,
+optimizer response, and `gate.json`.
+
+Regression Candidates are evidence only. The optimizer may record them for
+review, but it never edits the Regression Evaluation Set or promotes rows into
+it automatically. Holdout evaluation is deferred and not implemented here; this
+implementation also does not add a global `experiments.jsonl`.
 
 ## Useful Checks
 

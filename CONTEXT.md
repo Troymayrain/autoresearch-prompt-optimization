@@ -28,6 +28,18 @@ _Avoid_: Gift card code evaluation set, metadata evaluation set
 A manually labeled dataset for gift card code recognition optimization. Each row contains `card_image`, `origin`, and `md5_card_number`.
 _Avoid_: Card type evaluation set, metadata evaluation set
 
+**Regression Evaluation Set**:
+A human-maintained, manually confirmed guard dataset for an optimization goal. It contains cases that should already pass and must not regress when accepting a prompt change. Optimizer runs may read it, but must not automatically add cases to it.
+_Avoid_: Candidate set, full evaluation set, automatically promoted regression set
+
+**Regression Candidate**:
+A sample automatically suggested during optimization as a possible future regression guard. It is recorded as run evidence and is not part of a Regression Evaluation Set until a human confirms the ground truth and promotes it.
+_Avoid_: Regression evaluation set, automatically accepted guard case
+
+**Holdout Evaluation Set**:
+A manually labeled evaluation dataset withheld from routine optimization feedback. It is used to detect overfitting after optimizer behavior has already improved on the normal evaluation set.
+_Avoid_: Regression evaluation set, full evaluation set, routine dev set
+
 **golden_type**:
 The manually labeled answer for card type recognition. Its value repeats `Physics` or `E-codes` once per card image in the same row; mixed-type rows are outside the current scope.
 _Avoid_: type, cardType, denomination
@@ -47,3 +59,6 @@ Domain expert: Only if it measures physical card versus electronic code. Brand a
 
 Dev: Should a card type optimization change redemption code extraction rules?
 Domain expert: No. Code recognition and card type recognition are separate optimization goals.
+
+Dev: Can the optimizer add a promising sample directly to the regression set?
+Domain expert: No. It may collect a Regression Candidate, but a human must confirm it before it becomes a Regression Evaluation Set guard.
