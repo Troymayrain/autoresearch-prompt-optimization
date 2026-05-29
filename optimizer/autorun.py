@@ -14,8 +14,14 @@ from optimizer.git_control import commit_prompt, restore_prompt
 from optimizer.llm import build_optimizer_messages, call_optimizer_llm
 from optimizer.node_runner import OcrRunner
 from optimizer.prompt_gate import validate_prompt_file
-from optimizer.reporting import write_run_artifacts
-from optimizer.scoring import aggregate_scores, aggregate_type_scores
+from optimizer.regression_gate import RegressionGateDecision, compare_regression_scores
+from optimizer.reporting import write_gate_artifact, write_run_artifacts
+from optimizer.scoring import (
+    ScoreSummary,
+    TypeScoreSummary,
+    aggregate_scores,
+    aggregate_type_scores,
+)
 
 
 def should_stop(
@@ -30,11 +36,19 @@ def should_stop(
 
 
 def _accuracy(results: Sequence[EvaluationResult], task: TaskName = "code") -> float:
+    summary = _score_summary(results, task)
+    return summary.type_accuracy if task == "type" else summary.business_accuracy
+
+
+def _score_summary(
+    results: Sequence[EvaluationResult],
+    task: TaskName,
+) -> ScoreSummary | TypeScoreSummary:
     if task == "type":
         return aggregate_type_scores(
             result.type_score for result in results if result.type_score is not None
-        ).type_accuracy
-    return aggregate_scores(result.row_score for result in results).business_accuracy
+        )
+    return aggregate_scores(result.row_score for result in results)
 
 
 def _run_dir(base: Path, iteration: int) -> Path:
@@ -120,13 +134,38 @@ def _gate_retry_user(original_user: str, gate_error: str, invalid_prompt: str) -
     )
 
 
+def _write_regression_gate(
+    run_dir: Path,
+    task: TaskName,
+    decision: str,
+    gate: RegressionGateDecision,
+    accepted: ScoreSummary | TypeScoreSummary,
+    candidate: ScoreSummary | TypeScoreSummary,
+) -> None:
+    write_gate_artifact(
+        run_dir,
+        {
+            "task": task,
+            "phase": "regression",
+            "decision": decision,
+            "checks": [asdict(check) for check in gate.checks],
+            "reason": gate.reason,
+            "metrics": {
+                "accepted": asdict(accepted),
+                "candidate": asdict(candidate),
+            },
+        },
+    )
+
+
 async def main_async(args: argparse.Namespace) -> int:
     task = args.task
     cfg = OptimizerConfig.from_env()
     samples = load_dataset(args.dataset, task=task)
     regression_dataset = getattr(args, "regression_dataset", None)
-    if regression_dataset is not None:
-        load_dataset(regression_dataset, task=task)
+    regression_samples = (
+        load_dataset(regression_dataset, task=task) if regression_dataset is not None else None
+    )
     split = split_samples(samples, cfg.dev_sample_size)
     runner = OcrRunner(cfg.node_binary, cfg.ocr_runner_path)
     experiment_dir = cfg.runs_dir / f"card-ocr-prompt-opt-{task}"
@@ -137,6 +176,10 @@ async def main_async(args: argparse.Namespace) -> int:
     validate_prompt_file(prompt_path, cfg.node_binary)
     baseline_prompt = prompt_path.read_text(encoding="utf-8")
     full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
+    regression_baseline = None
+    if regression_samples is not None:
+        regression_results = await run_once(regression_samples, runner, cfg.ocr_concurrency, task)
+        regression_baseline = _score_summary(regression_results, task)
     best_full_accuracy = _accuracy(full_results, task)
     best_dev_accuracy = _accuracy(_results_for_samples(full_results, split.dev), task)
     accepted_dir = _run_dir(experiment_dir, 0)
@@ -265,6 +308,40 @@ async def main_async(args: argparse.Namespace) -> int:
             )
         )
         if full_accuracy > best_full_accuracy:
+            if regression_samples is not None and regression_baseline is not None:
+                regression_results = await run_once(
+                    regression_samples,
+                    runner,
+                    cfg.ocr_concurrency,
+                    task,
+                )
+                candidate_regression = _score_summary(regression_results, task)
+                regression_gate = compare_regression_scores(
+                    task,
+                    regression_baseline,
+                    candidate_regression,
+                )
+                if not regression_gate.passed:
+                    _write_regression_gate(
+                        run_dir,
+                        task,
+                        "discard",
+                        regression_gate,
+                        regression_baseline,
+                        candidate_regression,
+                    )
+                    restore_prompt(prompt_path, current_prompt)
+                    plateau_count += 1
+                    continue
+                _write_regression_gate(
+                    run_dir,
+                    task,
+                    "keep",
+                    regression_gate,
+                    regression_baseline,
+                    candidate_regression,
+                )
+                regression_baseline = candidate_regression
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
             accepted_dir = run_dir

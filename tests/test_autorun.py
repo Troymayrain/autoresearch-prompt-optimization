@@ -388,3 +388,161 @@ async def test_autorun_fails_fast_when_regression_dataset_is_malformed(tmp_path,
         await autorun.main_async(
             argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="code")
         )
+
+
+@pytest.mark.asyncio
+async def test_autorun_discards_full_improvement_when_regression_gate_fails(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    main_sample = Sample(2, "main.png", 0, "MAIN", True)
+    regression_sample = Sample(99, "guard.png", 0, "SAFE", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=2,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    proposals = iter(
+        [
+            OptimizerProposal("h1", "e1", "r1", ["row 99"], "candidate"),
+            OptimizerProposal("h2", "e2", "r2", ["row 99"], "accepted"),
+        ]
+    )
+    seen_accuracies = []
+    run_labels = []
+    commits = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+
+    def fake_load_dataset(path, task):
+        return [regression_sample] if path == "regression.xlsx" else [main_sample]
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        sample = samples[0]
+        prompt_text = prompt.read_text(encoding="utf-8")
+        is_regression = sample.row_number == regression_sample.row_number
+        run_labels.append(("regression" if is_regression else "main", prompt_text))
+        if is_regression:
+            actual = "SAFE" if prompt_text == "accepted" else "MISS"
+        else:
+            actual = "MAIN" if prompt_text == "candidate" else "MISS"
+        return [
+            EvaluationResult.from_ocr_response(
+                sample,
+                {"status": 200, "data": [{"number": actual}], "imageStatus": ["ok"]},
+            )
+        ]
+
+    def fake_call(provider, model, system, user):
+        seen_accuracies.append(json.loads(user)["summary"]["business_accuracy"])
+        return next(proposals)
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=samples, full=samples))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="code")
+    )
+
+    assert commits == []
+    assert prompt.read_text(encoding="utf-8") == "accepted"
+    assert seen_accuracies == [0.0, 0.0]
+    assert run_labels == [
+        ("main", "accepted"),
+        ("regression", "accepted"),
+        ("main", "candidate"),
+        ("main", "candidate"),
+        ("regression", "candidate"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_autorun_updates_regression_baseline_after_accepted_candidate(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    main_sample = Sample(2, "main.png", 0, "A\nB", True)
+    regression_sample = Sample(99, "guard.png", 0, "SAFE\nGUARD", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=2,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    proposals = iter(
+        [
+            OptimizerProposal("h1", "e1", "r1", ["row 2"], "candidate-one"),
+            OptimizerProposal("h2", "e2", "r2", ["row 2"], "candidate-two"),
+        ]
+    )
+    seen_accuracies = []
+    commits = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+
+    def fake_load_dataset(path, task):
+        return [regression_sample] if path == "regression.xlsx" else [main_sample]
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        sample = samples[0]
+        prompt_text = prompt.read_text(encoding="utf-8")
+        if sample.row_number == regression_sample.row_number:
+            actual = "SAFE" if prompt_text == "candidate-one" else ""
+        elif prompt_text == "candidate-one":
+            actual = "A"
+        elif prompt_text == "candidate-two":
+            actual = "A\nB"
+        else:
+            actual = ""
+        return [
+            EvaluationResult.from_ocr_response(
+                sample,
+                {"status": 200, "data": [{"number": actual}], "imageStatus": ["ok"]},
+            )
+        ]
+
+    def fake_call(provider, model, system, user):
+        seen_accuracies.append(json.loads(user)["summary"]["business_accuracy"])
+        return next(proposals)
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=samples, full=samples))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="code")
+    )
+
+    assert commits == ["prompt(code): improve code OCR accuracy to 50.00%"]
+    assert prompt.read_text(encoding="utf-8") == "candidate-one"
+    assert seen_accuracies == [0.0, 50.0]
