@@ -91,6 +91,16 @@ def write_gate_artifact(run_dir: Path, payload: dict) -> None:
     _write_json(run_dir / "gate.json", _sanitize(payload))
 
 
+def write_regression_artifacts(
+    run_dir: Path,
+    results: Sequence[EvaluationResult],
+    task: TaskName,
+) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(run_dir / "regression-summary.json", _summary(task, "regression", results))
+    _write_results_xlsx(run_dir / "regression-results.xlsx", results, task)
+
+
 def _write_results_xlsx(path: Path, results: Sequence[EvaluationResult], task: TaskName) -> None:
     wb = Workbook()
     ws = wb.active

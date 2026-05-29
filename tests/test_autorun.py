@@ -3,12 +3,47 @@ import json
 import types
 
 import pytest
+from openpyxl import load_workbook
 
 import optimizer.autorun as autorun
 from optimizer.autorun import _accuracy, should_stop
 from optimizer.dataset import DatasetSplit, Sample
 from optimizer.evaluation import EvaluationResult
 from optimizer.llm import OptimizerProposal
+
+CODE_RESULT_HEADERS = [
+    "task",
+    "row_number",
+    "card_image",
+    "origin",
+    "expected",
+    "actual",
+    "business_correct",
+    "business_total",
+    "failure_category",
+    "image_status",
+]
+TYPE_RESULT_HEADERS = [
+    "task",
+    "row_number",
+    "card_image",
+    "origin",
+    "expected",
+    "actual",
+    "type_correct",
+    "type_total",
+    "not_evaluable_reason",
+    "failure_category",
+    "image_status",
+]
+
+
+def _xlsx_headers(path):
+    wb = load_workbook(path, read_only=True)
+    try:
+        return list(next(wb.active.iter_rows(values_only=True)))
+    finally:
+        wb.close()
 
 
 def test_stop_when_target_reached():
@@ -239,6 +274,10 @@ async def test_autorun_uses_type_metric_for_keep_commit_and_artifacts(tmp_path, 
     summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/summary.json").read_text())
     assert summary["task"] == "type"
     assert summary["type_accuracy"] == 100.0
+    gate = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/gate.json").read_text())
+    assert gate["decision"] == "not_configured"
+    assert gate["reason"] == "regression_not_configured"
+    assert gate["checks"] == []
 
 
 @pytest.mark.asyncio
@@ -470,6 +509,100 @@ async def test_autorun_discards_full_improvement_when_regression_gate_fails(tmp_
         ("main", "candidate"),
         ("regression", "candidate"),
     ]
+    run_dir = tmp_path / "runs/card-ocr-prompt-opt-code/run-001"
+    gate = json.loads((run_dir / "gate.json").read_text())
+    full_summary = json.loads((run_dir / "summary.json").read_text())
+    regression_summary = json.loads((run_dir / "regression-summary.json").read_text())
+    response = json.loads((run_dir / "optimizer-response.json").read_text())
+
+    assert gate["decision"] == "discard"
+    assert (run_dir / "prompt-before.js").read_text() == "accepted"
+    assert (run_dir / "prompt-after.js").read_text() == "candidate"
+    assert "candidate" in (run_dir / "prompt.diff").read_text()
+    assert full_summary["phase"] == "full"
+    assert full_summary["business_accuracy"] == 100.0
+    assert _xlsx_headers(run_dir / "results.xlsx") == CODE_RESULT_HEADERS
+    assert regression_summary["phase"] == "regression"
+    assert regression_summary["business_accuracy"] == 0.0
+    assert _xlsx_headers(run_dir / "regression-results.xlsx") == CODE_RESULT_HEADERS
+    assert response["target_failures"] == ["row 99"]
+
+
+@pytest.mark.asyncio
+async def test_autorun_writes_type_regression_failure_artifacts(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    main_sample = Sample(2, "main.png", 0, "Physics", True)
+    regression_sample = Sample(99, "guard.png", 0, "Physics", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(
+        autorun,
+        "call_optimizer_llm",
+        lambda provider, model, system, user: OptimizerProposal(
+            "h",
+            "e",
+            "r",
+            ["row 99"],
+            "candidate",
+        ),
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    def fake_load_dataset(path, task):
+        return [regression_sample] if path == "regression.xlsx" else [main_sample]
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        sample = samples[0]
+        prompt_text = prompt.read_text(encoding="utf-8")
+        if sample.row_number == regression_sample.row_number:
+            actual_type = "Physics" if prompt_text == "accepted" else "E-codes"
+        else:
+            actual_type = "Physics" if prompt_text == "candidate" else "E-codes"
+        return [
+            EvaluationResult.from_ocr_response(
+                sample,
+                {"status": 200, "data": [{"type": actual_type, "number": "wrong"}], "imageStatus": ["ok"]},
+                task="type",
+            )
+        ]
+
+    monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=samples, full=samples))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="type")
+    )
+
+    run_dir = tmp_path / "runs/card-ocr-prompt-opt-type/run-001"
+    gate = json.loads((run_dir / "gate.json").read_text())
+    regression_summary = json.loads((run_dir / "regression-summary.json").read_text())
+
+    assert prompt.read_text(encoding="utf-8") == "accepted"
+    assert gate["decision"] == "discard"
+    assert regression_summary["phase"] == "regression"
+    assert regression_summary["type_accuracy"] == 0.0
+    assert _xlsx_headers(run_dir / "regression-results.xlsx") == TYPE_RESULT_HEADERS
 
 
 @pytest.mark.asyncio

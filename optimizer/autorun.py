@@ -15,7 +15,7 @@ from optimizer.llm import build_optimizer_messages, call_optimizer_llm
 from optimizer.node_runner import OcrRunner
 from optimizer.prompt_gate import validate_prompt_file
 from optimizer.regression_gate import RegressionGateDecision, compare_regression_scores
-from optimizer.reporting import write_gate_artifact, write_run_artifacts
+from optimizer.reporting import write_gate_artifact, write_regression_artifacts, write_run_artifacts
 from optimizer.scoring import (
     ScoreSummary,
     TypeScoreSummary,
@@ -154,6 +154,20 @@ def _write_regression_gate(
                 "accepted": asdict(accepted),
                 "candidate": asdict(candidate),
             },
+        },
+    )
+
+
+def _write_regression_not_configured(run_dir: Path, task: TaskName) -> None:
+    write_gate_artifact(
+        run_dir,
+        {
+            "task": task,
+            "phase": "regression",
+            "decision": "not_configured",
+            "checks": [],
+            "reason": "regression_not_configured",
+            "metrics": {},
         },
     )
 
@@ -322,6 +336,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     candidate_regression,
                 )
                 if not regression_gate.passed:
+                    write_regression_artifacts(run_dir, regression_results, task)
                     _write_regression_gate(
                         run_dir,
                         task,
@@ -342,6 +357,8 @@ async def main_async(args: argparse.Namespace) -> int:
                     candidate_regression,
                 )
                 regression_baseline = candidate_regression
+            else:
+                _write_regression_not_configured(run_dir, task)
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
             accepted_dir = run_dir
