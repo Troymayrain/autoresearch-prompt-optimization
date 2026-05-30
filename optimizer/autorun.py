@@ -242,6 +242,12 @@ def _record_focused_attempt(
         )
 
 
+def _has_eligible_focused_group(feedback_failures: dict, attempt_history: Sequence[dict]) -> bool:
+    return bool(feedback_failures.get("primary_groups")) and bool(
+        select_focused_group(feedback_failures, attempt_history)
+    )
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -647,7 +653,14 @@ async def main_async(args: argparse.Namespace) -> int:
         plateau_count,
         cfg.plateau_window,
         cfg.max_iterations,
-        no_business_learning_count,
+        (
+            0
+            if _has_eligible_focused_group(
+                _read_json(accepted_dir / "feedback-failures.json"),
+                focused_attempt_history,
+            )
+            else no_business_learning_count
+        ),
         no_business_learning_window,
     )
     _write_stop_artifact(
