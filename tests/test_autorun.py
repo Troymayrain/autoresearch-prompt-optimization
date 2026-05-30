@@ -915,6 +915,7 @@ async def test_autorun_updates_regression_baseline_after_accepted_candidate(tmp_
         ]
     )
     seen_accuracies = []
+    seen_payloads = []
     commits = []
 
     monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
@@ -941,7 +942,9 @@ async def test_autorun_updates_regression_baseline_after_accepted_candidate(tmp_
         ]
 
     def fake_call(provider, model, system, user):
-        seen_accuracies.append(json.loads(user)["summary"]["business_accuracy"])
+        payload = json.loads(user)
+        seen_payloads.append(payload)
+        seen_accuracies.append(payload["summary"]["business_accuracy"])
         return next(proposals)
 
     monkeypatch.setattr(autorun, "load_dataset", fake_load_dataset)
@@ -962,6 +965,7 @@ async def test_autorun_updates_regression_baseline_after_accepted_candidate(tmp_
     assert commits == ["prompt(code): improve code OCR accuracy to 50.00%"]
     assert prompt.read_text(encoding="utf-8") == "candidate-one"
     assert seen_accuracies == [0.0, 50.0]
+    assert "candidate_evaluation_delta_summary" not in seen_payloads[1]
     session = _latest_session(tmp_path, "code")
     first_delta = json.loads((session / "run-001/dev-delta.json").read_text())
     second_delta = json.loads((session / "run-002/dev-delta.json").read_text())

@@ -425,7 +425,7 @@ async def main_async(args: argparse.Namespace) -> int:
             proposal.target_failures,
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
-        recent_delta_summaries.append(summarize_candidate_delta(dev_delta))
+        dev_delta_summary = summarize_candidate_delta(dev_delta)
         if _has_primary_learning(dev_delta):
             no_business_learning_count = 0
         else:
@@ -444,6 +444,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     task,
                 )
             )
+            recent_delta_summaries.append(dev_delta_summary)
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
             completed_iteration = iteration
@@ -492,6 +493,7 @@ async def main_async(args: argparse.Namespace) -> int:
                         regression_baseline,
                         candidate_regression,
                     )
+                    recent_delta_summaries.append(dev_delta_summary)
                     restore_prompt(prompt_path, current_prompt)
                     plateau_count += 1
                     last_phase = "regression"
@@ -518,6 +520,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 f"prompt({task}): improve {task} OCR accuracy to {full_accuracy:.2f}%",
             )
         else:
+            recent_delta_summaries.append(dev_delta_summary)
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
 
