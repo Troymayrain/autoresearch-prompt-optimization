@@ -225,6 +225,11 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
     assert loaded_tasks == ["code"]
     assert seen_accuracies == [100.0, 100.0]
     assert prompt.read_text(encoding="utf-8") == "good"
+    delta = json.loads((_latest_session(tmp_path, "code") / "run-001/dev-delta.json").read_text())
+    assert delta["regressed_business_rows"][0]["row_number"] == 2
+    assert delta["target_failures_effect"]["row_targets"] == [
+        {"target": "row 2", "row_number": 2, "outcome": "regressed"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -759,3 +764,10 @@ async def test_autorun_updates_regression_baseline_after_accepted_candidate(tmp_
     assert commits == ["prompt(code): improve code OCR accuracy to 50.00%"]
     assert prompt.read_text(encoding="utf-8") == "candidate-one"
     assert seen_accuracies == [0.0, 50.0]
+    session = _latest_session(tmp_path, "code")
+    first_delta = json.loads((session / "run-001/dev-delta.json").read_text())
+    second_delta = json.loads((session / "run-002/dev-delta.json").read_text())
+    assert first_delta["improved_business_rows"][0]["accepted_business_correct"] == 0
+    assert first_delta["improved_business_rows"][0]["candidate_business_correct"] == 1
+    assert second_delta["improved_business_rows"][0]["accepted_business_correct"] == 1
+    assert second_delta["improved_business_rows"][0]["candidate_business_correct"] == 2

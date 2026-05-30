@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
+from optimizer.candidate_delta import compare_candidate_delta
 from optimizer.config import OptimizerConfig
 from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
 from optimizer.evaluation import EvaluationResult, evaluate_samples
@@ -126,6 +127,11 @@ def _read_failures(path: Path) -> list[dict]:
     return failures
 
 
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _write_artifacts(
     run_dir: Path,
     phase: str,
@@ -232,7 +238,8 @@ async def main_async(args: argparse.Namespace) -> int:
         regression_results = await run_once(regression_samples, runner, cfg.ocr_concurrency, task)
         regression_baseline = _score_summary(regression_results, task)
     best_full_accuracy = _accuracy(full_results, task)
-    best_dev_accuracy = _accuracy(_results_for_samples(full_results, split.dev), task)
+    accepted_dev_results = _results_for_samples(full_results, split.dev)
+    best_dev_accuracy = _accuracy(accepted_dev_results, task)
     accepted_dir = _run_dir(experiment_dir, 0)
     _write_artifacts(
         accepted_dir,
@@ -326,6 +333,13 @@ async def main_async(args: argparse.Namespace) -> int:
             continue
 
         dev_results = await run_once(split.dev, runner, cfg.ocr_concurrency, task)
+        dev_delta = compare_candidate_delta(
+            task,
+            accepted_dev_results,
+            dev_results,
+            proposal.target_failures,
+        )
+        _write_json(run_dir / "dev-delta.json", dev_delta)
         dev_accuracy = _accuracy(dev_results, task)
         if dev_accuracy <= best_dev_accuracy:
             recent_diffs.append(
@@ -398,6 +412,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 _write_regression_not_configured(run_dir, task)
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
+            accepted_dev_results = dev_results
             accepted_dir = run_dir
             plateau_count = 0
             commit_prompt(
