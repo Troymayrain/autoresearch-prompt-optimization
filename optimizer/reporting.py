@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Sequence
@@ -9,8 +10,8 @@ from typing import Sequence
 from openpyxl import Workbook
 
 from optimizer.dataset import TaskName
-from optimizer.evaluation import EvaluationResult
-from optimizer.scoring import aggregate_scores, aggregate_type_scores
+from optimizer.evaluation import EvaluationResult, INFRASTRUCTURE_FAILURES
+from optimizer.scoring import aggregate_scores, aggregate_type_scores, normalize_business
 
 SECRET_KEY_MARKERS = (
     "secret",
@@ -99,6 +100,192 @@ def write_regression_artifacts(
     run_dir.mkdir(parents=True, exist_ok=True)
     _write_json(run_dir / "regression-summary.json", _summary(task, "regression", results))
     _write_results_xlsx(run_dir / "regression-results.xlsx", results, task)
+
+
+def write_feedback_failures(
+    run_dir: Path,
+    feedback_set: str,
+    results: Sequence[EvaluationResult],
+    task: TaskName = "code",
+    last_candidate_results: Sequence[EvaluationResult] | None = None,
+) -> dict[str, object]:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload = _feedback_failures(feedback_set, results, task)
+    _write_json(run_dir / "feedback-failures.json", payload)
+    _write_feedback_review_xlsx(
+        run_dir / "feedback-review.xlsx",
+        results,
+        task,
+        last_candidate_results or [],
+    )
+    return payload
+
+
+def _feedback_failures(
+    feedback_set: str,
+    results: Sequence[EvaluationResult],
+    task: TaskName,
+) -> dict[str, object]:
+    primary: dict[str, dict[str, object]] = {}
+    secondary: dict[str, dict[str, object]] = {}
+    for result in results:
+        key, is_secondary = _feedback_group_key(result, task)
+        if not key:
+            continue
+        target = secondary if is_secondary else primary
+        _add_feedback_group_result(target, key, result, task)
+    return {
+        "task": task,
+        "feedback_set": feedback_set,
+        "primary_groups": list(primary.values()),
+        "secondary_groups": list(secondary.values()),
+    }
+
+
+def _feedback_group_key(result: EvaluationResult, task: TaskName) -> tuple[str, bool]:
+    if result.failure_category in INFRASTRUCTURE_FAILURES:
+        return "", False
+    if task == "type":
+        if result.failure_category:
+            return result.failure_category, False
+        return "", False
+
+    category = result.failure_category
+    if category == "wrong_code":
+        # 业务优先：先把“选错码来源”和“字符识别错”拆开，避免 optimizer 只记行号。
+        if _selected_non_redeemable_number(result):
+            return "wrong_code_selected_non_redeemable_number", False
+        return "wrong_code_ocr_confusion", False
+    if category == "no_card":
+        return "no_card_false_negative", False
+    if category == "missing_code":
+        return "missing_code", False
+    if category == "extra_code":
+        return "extra_code_output", True
+    if _strict_only_code_issue(result):
+        return "strict_code_cleanliness", True
+    return "", False
+
+
+def _selected_non_redeemable_number(result: EvaluationResult) -> bool:
+    expected = normalize_business(result.sample.expected_raw)
+    if not expected or not re.search(r"[A-Z]", expected):
+        return False
+    return any(
+        _digits_only(actual) and len(_digits_only(actual)) >= 12
+        for actual in result.actual_numbers
+    )
+
+
+def _strict_only_code_issue(result: EvaluationResult) -> bool:
+    score = result.row_score
+    return bool(
+        score.business_total
+        and score.business_correct == score.business_total
+        and score.strict_correct < score.business_total
+    )
+
+
+def _digits_only(value: object) -> str:
+    return re.sub(r"\D+", "", str(value))
+
+
+def _add_feedback_group_result(
+    groups: dict[str, dict[str, object]],
+    key: str,
+    result: EvaluationResult,
+    task: TaskName,
+) -> None:
+    group = groups.setdefault(
+        key,
+        {
+            "key": key,
+            "failure_category": result.failure_category,
+            "reason": _feedback_reason(key),
+            "count": 0,
+            "rows": [],
+            "examples": [],
+        },
+    )
+    group["count"] = int(group["count"]) + 1
+    group["rows"].append(result.sample.row_number)
+    if len(group["examples"]) < 5:
+        group["examples"].append(_feedback_example(result, task))
+
+
+def _feedback_example(result: EvaluationResult, task: TaskName) -> dict[str, object]:
+    actual = result.actual_types if task == "type" else result.actual_numbers
+    return {
+        "row_number": result.sample.row_number,
+        "card_image": result.sample.card_image,
+        "origin": result.sample.origin,
+        "expected": result.sample.expected_raw,
+        "actual": actual,
+        "failure_category": result.failure_category,
+        "image_status": result.image_status,
+    }
+
+
+def _feedback_reason(key: str) -> str:
+    return {
+        "wrong_code_selected_non_redeemable_number": "selected a non-redeemable numeric value instead of the gift card code",
+        "wrong_code_ocr_confusion": "selected a code-like value with character-level OCR differences",
+        "no_card_false_negative": "reported no card or no valid code when a labeled code exists",
+        "missing_code": "returned no redeemable code for a scoreable row",
+        "extra_code_output": "returned the expected code plus additional unmatched code output",
+        "strict_code_cleanliness": "business match passed but strict code presentation still changed",
+    }.get(key, key)
+
+
+def _write_feedback_review_xlsx(
+    path: Path,
+    results: Sequence[EvaluationResult],
+    task: TaskName,
+    last_candidate_results: Sequence[EvaluationResult],
+) -> None:
+    last_by_row = {result.sample.row_number: result for result in last_candidate_results}
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "feedback-review"
+    ws.append(
+        [
+            "group_key",
+            "row_number",
+            "origin",
+            "card_image",
+            "expected",
+            "accepted_actual",
+            "last_candidate_actual",
+            "failure_category",
+            "review_decision",
+            "review_notes",
+        ]
+    )
+    for result in results:
+        key, _ = _feedback_group_key(result, task)
+        if not key:
+            continue
+        last_candidate = last_by_row.get(result.sample.row_number)
+        ws.append(
+            [
+                key,
+                result.sample.row_number,
+                result.sample.origin,
+                result.sample.card_image,
+                result.sample.expected_raw,
+                _actual_text(result, task),
+                _actual_text(last_candidate, task) if last_candidate else "",
+                result.failure_category,
+                "",
+                "",
+            ]
+        )
+    wb.save(path)
+
+
+def _actual_text(result: EvaluationResult, task: TaskName) -> str:
+    actual = result.actual_types if task == "type" else result.actual_numbers
+    return "\n".join(actual)
 
 
 def _write_results_xlsx(path: Path, results: Sequence[EvaluationResult], task: TaskName) -> None:
