@@ -108,18 +108,29 @@ def parse_optimizer_response(text: str) -> OptimizerProposal:
     if missing:
         raise ValueError(f"optimizer response missing: {', '.join(missing)}")
     target_failures = data.get("target_failures")
-    if (
-        not isinstance(target_failures, list)
-        or not target_failures
-        or any(not isinstance(item, str) or not item.strip() for item in target_failures)
-    ):
-        raise ValueError("optimizer response target_failures must be a non-empty list of strings")
+    if not isinstance(target_failures, list) or not target_failures:
+        raise ValueError("optimizer response target_failures must be a non-empty list")
+    normalized_target_failures: list[str] = []
+    for item in target_failures:
+        if isinstance(item, str):
+            value = item.strip()
+        elif isinstance(item, int) and not isinstance(item, bool):
+            value = str(item)
+        else:
+            raise ValueError(
+                "optimizer response target_failures must contain strings or row numbers"
+            )
+        if not value:
+            raise ValueError(
+                "optimizer response target_failures must contain strings or row numbers"
+            )
+        normalized_target_failures.append(value)
 
     return OptimizerProposal(
         hypothesis=data["hypothesis"].strip(),
         expected_effect=data["expected_effect"].strip(),
         risk=data["risk"].strip(),
-        target_failures=[item.strip() for item in target_failures],
+        target_failures=normalized_target_failures,
         prompt_file=data["prompt_file"],
     )
 

@@ -127,3 +127,58 @@ def test_type_delta_uses_type_groups_without_code_categories():
     assert [row["row_number"] for row in delta["regressed_type_rows"]] == [3]
     assert [row["row_number"] for row in delta["persistent_type_failure_rows"]] == [4]
     assert [row["row_number"] for row in delta["not_evaluable_rows"]] == [5]
+
+
+def test_target_failures_effect_reports_row_outcomes():
+    accepted = [
+        _code_result(2, "ABC", ["MISS"]),
+        _code_result(3, "AAA", ["AAA"]),
+        _code_result(4, "CCC", ["MISS"]),
+        _code_result(5, "DDD", ["DDD"]),
+    ]
+    candidate = [
+        _code_result(2, "ABC", ["ABC"]),
+        _code_result(3, "AAA", ["MISS"]),
+        _code_result(4, "CCC", ["WRONG"]),
+        _code_result(5, "DDD", [], image_status="error-download"),
+    ]
+
+    delta = compare_candidate_delta("code", accepted, candidate, target_failures=["2", "row 3", "4", "5", "99"])
+
+    assert delta["target_failures_effect"]["row_targets"] == [
+        {"target": "2", "row_number": 2, "outcome": "improved"},
+        {"target": "row 3", "row_number": 3, "outcome": "regressed"},
+        {"target": "4", "row_number": 4, "outcome": "unchanged"},
+        {"target": "5", "row_number": 5, "outcome": "ignored", "reason": "infrastructure"},
+        {"target": "99", "row_number": 99, "outcome": "ignored", "reason": "row_not_found"},
+    ]
+
+
+def test_target_failures_effect_summarizes_categories_and_priority_mismatch():
+    accepted = [
+        _code_result(2, "ABC", []),
+        _code_result(3, "AAA", ["AAA"]),
+        _code_result(4, "CCC", ["CCC"]),
+        _code_result(5, "DDD", ["DDD"]),
+    ]
+    candidate = [
+        _code_result(2, "ABC", ["ABC"]),
+        _code_result(3, "AAA", ["MISS"]),
+        _code_result(4, "CCC", ["CCC", "EXTRA"]),
+        _code_result(5, "DDD", [], image_status="error-download"),
+    ]
+
+    delta = compare_candidate_delta(
+        "code",
+        accepted,
+        candidate,
+        target_failures=["missing_code", "wrong_code", "extra_code", "download_error"],
+    )
+
+    assert delta["target_failures_effect"]["category_targets"] == [
+        {"target": "missing_code", "outcome": "improved", "row_numbers": [2]},
+        {"target": "wrong_code", "outcome": "regressed", "row_numbers": [3]},
+        {"target": "extra_code", "outcome": "unchanged", "row_numbers": [4]},
+        {"target": "download_error", "outcome": "ignored", "reason": "infrastructure", "row_numbers": [5]},
+    ]
+    assert delta["target_priority_mismatch"] == ["extra_code", "download_error"]

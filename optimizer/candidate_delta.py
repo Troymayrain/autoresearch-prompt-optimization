@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import re
 from typing import Sequence
 
 from optimizer.dataset import TaskName
 from optimizer.evaluation import EvaluationResult, INFRASTRUCTURE_FAILURES
 from optimizer.scoring import aggregate_scores, aggregate_type_scores
 
+SECONDARY_CODE_FAILURES = {"extra_code"}
+
 
 def compare_candidate_delta(
     task: TaskName,
     accepted: Sequence[EvaluationResult],
     candidate: Sequence[EvaluationResult],
+    target_failures: Sequence[str] | None = None,
 ) -> dict:
     if task == "type":
-        return _type_delta(accepted, candidate)
-    return _code_delta(accepted, candidate)
+        delta = _type_delta(accepted, candidate)
+    else:
+        delta = _code_delta(accepted, candidate)
+    if target_failures:
+        _add_target_failures_effect(delta, target_failures)
+    return delta
 
 
 def _pairs(
@@ -108,7 +116,7 @@ def _has_infra_failure(accepted: EvaluationResult, candidate: EvaluationResult) 
 
 
 def _has_secondary_code_failure(accepted: EvaluationResult, candidate: EvaluationResult) -> bool:
-    return "extra_code" in {accepted.failure_category, candidate.failure_category}
+    return bool(SECONDARY_CODE_FAILURES & {accepted.failure_category, candidate.failure_category})
 
 
 def _type_delta(
@@ -170,3 +178,104 @@ def _type_row_detail(accepted: EvaluationResult, candidate: EvaluationResult) ->
         "accepted_not_evaluable_reason": accepted_score.not_evaluable_reason,
         "candidate_not_evaluable_reason": candidate_score.not_evaluable_reason,
     }
+
+
+def _add_target_failures_effect(delta: dict, target_failures: Sequence[str]) -> None:
+    details = _all_row_details(delta)
+    by_row = {detail["row_number"]: detail for detail in details}
+    effect = {"row_targets": [], "category_targets": []}
+    mismatches = []
+    for target in target_failures:
+        row_number = _target_row_number(target)
+        if row_number is not None:
+            result = _row_target_effect(str(target), row_number, by_row)
+            effect["row_targets"].append(result)
+        else:
+            result = _category_target_effect(str(target).strip(), details)
+            effect["category_targets"].append(result)
+        if _is_priority_mismatch(result):
+            mismatches.append(str(target))
+    delta["target_failures_effect"] = effect
+    if mismatches:
+        delta["target_priority_mismatch"] = mismatches
+
+
+def _all_row_details(delta: dict) -> list[dict]:
+    details = []
+    for key, value in delta.items():
+        if key.endswith("_rows") and isinstance(value, list):
+            details.extend(value)
+    return details
+
+
+def _target_row_number(target: object) -> int | None:
+    text = str(target).strip().lower()
+    if text.isdigit():
+        return int(text)
+    match = re.fullmatch(r"row\s+(\d+)", text)
+    return int(match.group(1)) if match else None
+
+
+def _row_target_effect(target: str, row_number: int, by_row: dict[int, dict]) -> dict:
+    detail = by_row.get(row_number)
+    if detail is None:
+        return {
+            "target": target,
+            "row_number": row_number,
+            "outcome": "ignored",
+            "reason": "row_not_found",
+        }
+    outcome = _detail_outcome(detail)
+    result = {"target": target, "row_number": row_number, "outcome": outcome}
+    if outcome == "ignored":
+        result["reason"] = "infrastructure"
+    return result
+
+
+def _category_target_effect(target: str, details: list[dict]) -> dict:
+    matched = [
+        detail
+        for detail in details
+        if target in {detail["accepted_failure_category"], detail["candidate_failure_category"]}
+    ]
+    if not matched:
+        return {"target": target, "outcome": "ignored", "reason": "no_matching_evidence", "row_numbers": []}
+    row_numbers = [detail["row_number"] for detail in matched]
+    if target in INFRASTRUCTURE_FAILURES:
+        return {
+            "target": target,
+            "outcome": "ignored",
+            "reason": "infrastructure",
+            "row_numbers": row_numbers,
+        }
+    outcomes = [_detail_outcome(detail) for detail in matched]
+    if "regressed" in outcomes:
+        outcome = "regressed"
+    elif "improved" in outcomes:
+        outcome = "improved"
+    else:
+        outcome = "unchanged"
+    return {"target": target, "outcome": outcome, "row_numbers": row_numbers}
+
+
+def _detail_outcome(detail: dict) -> str:
+    if _detail_has_infra(detail):
+        return "ignored"
+    delta = detail.get("business_delta", detail.get("type_delta", 0))
+    if delta > 0:
+        return "improved"
+    if delta < 0:
+        return "regressed"
+    return "unchanged"
+
+
+def _detail_has_infra(detail: dict) -> bool:
+    categories = {detail["accepted_failure_category"], detail["candidate_failure_category"]}
+    return bool(categories & INFRASTRUCTURE_FAILURES)
+
+
+def _is_priority_mismatch(result: dict) -> bool:
+    if result.get("reason") == "infrastructure":
+        return True
+    target = result.get("target")
+    return isinstance(target, str) and target in SECONDARY_CODE_FAILURES

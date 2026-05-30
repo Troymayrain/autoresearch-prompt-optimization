@@ -18,6 +18,15 @@ def test_parse_optimizer_response_extracts_json_object():
     assert proposal == OptimizerProposal("h", "e", "r", ["row 2"], "module.exports={}")
 
 
+def test_parse_optimizer_response_accepts_numeric_row_numbers():
+    proposal = parse_optimizer_response(
+        '{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":[3],'
+        '"prompt_file":"module.exports={}"}'
+    )
+
+    assert proposal == OptimizerProposal("h", "e", "r", ["3"], "module.exports={}")
+
+
 def test_parse_optimizer_response_rejects_missing_prompt():
     with pytest.raises(ValueError, match="prompt_file"):
         parse_optimizer_response('{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":["row 2"]}')
@@ -35,10 +44,11 @@ def test_parse_optimizer_response_rejects_empty_target_failures():
         )
 
 
-def test_parse_optimizer_response_rejects_non_string_target_failures():
+def test_parse_optimizer_response_rejects_invalid_target_failures():
     with pytest.raises(ValueError, match="target_failures"):
         parse_optimizer_response(
-            '{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":["row 2",3],"prompt_file":"p"}'
+            '{"hypothesis":"h","expected_effect":"e","risk":"r","target_failures":["row 2",{"row":3}],'
+            '"prompt_file":"p"}'
         )
 
 
