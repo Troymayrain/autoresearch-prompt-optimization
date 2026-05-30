@@ -13,12 +13,18 @@ from optimizer.candidate_delta import compare_candidate_delta, summarize_candida
 from optimizer.config import OptimizerConfig
 from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
 from optimizer.evaluation import EvaluationResult, evaluate_samples
+from optimizer.focused_feedback import build_failed_strategy_memory, select_focused_group
 from optimizer.git_control import commit_prompt, restore_prompt
 from optimizer.llm import build_optimizer_messages, call_optimizer_llm
 from optimizer.node_runner import OcrRunner
 from optimizer.prompt_gate import validate_prompt_file
 from optimizer.regression_gate import RegressionGateDecision, compare_regression_scores
-from optimizer.reporting import write_gate_artifact, write_regression_artifacts, write_run_artifacts
+from optimizer.reporting import (
+    write_feedback_failures,
+    write_gate_artifact,
+    write_regression_artifacts,
+    write_run_artifacts,
+)
 from optimizer.scoring import (
     ScoreSummary,
     TypeScoreSummary,
@@ -165,6 +171,72 @@ def _has_primary_learning(dev_delta: dict) -> bool:
     return bool(dev_delta.get("improved_business_rows") or dev_delta.get("improved_type_rows"))
 
 
+def _target_failures_for_delta(
+    target_failures: Sequence[str],
+    feedback_failures: dict,
+    focused_feedback_group: dict | None = None,
+) -> list[str]:
+    group_rows = {}
+    if focused_feedback_group:
+        groups = [focused_feedback_group]
+    else:
+        groups = [
+            group
+            for section in ("primary_groups", "secondary_groups")
+            for group in feedback_failures.get(section, [])
+        ]
+    for group in groups:
+        if isinstance(group, dict):
+            key = str(group.get("key", "")).strip()
+            rows = group.get("rows", [])
+            if key and isinstance(rows, list):
+                group_rows[key] = [f"row {row}" for row in rows]
+
+    expanded = []
+    for target in target_failures:
+        # 闭环要求 group key 在进入 delta 前落到 dev rows，否则下一轮只能得到 no_matching_evidence。
+        expanded.extend(group_rows.get(str(target).strip(), [target]))
+    return expanded
+
+
+def _record_focused_attempt(
+    focused_group: dict | None,
+    strategy_summary: str,
+    dev_delta: dict,
+    prompt_diff: str,
+    failed_strategy_memory: list[dict],
+    focused_attempt_history: list[dict],
+    run_dir: Path,
+) -> None:
+    if not focused_group:
+        return
+    group_key = str(focused_group.get("key", "")).strip()
+    rows = focused_group.get("rows", [])
+    if not group_key or not isinstance(rows, list):
+        return
+
+    entry = build_failed_strategy_memory(
+        group_key,
+        strategy_summary,
+        rows,
+        dev_delta,
+        prompt_diff,
+    )
+    if entry:
+        failed_strategy_memory.append(entry)
+        focused_attempt_history.append(entry)
+        _write_json(run_dir / "failed-strategy-memory.json", {"entries": failed_strategy_memory})
+    elif _has_primary_learning(dev_delta):
+        focused_attempt_history.append(
+            {
+                "focused_group": group_key,
+                "strategy_summary": strategy_summary,
+                "target_rows": rows,
+                "outcome": "improved",
+            }
+        )
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -299,6 +371,8 @@ async def main_async(args: argparse.Namespace) -> int:
     prompt_path = cfg.prompt_path
     recent_diffs: list[str] = []
     recent_delta_summaries: list[dict] = []
+    focused_attempt_history: list[dict] = []
+    failed_strategy_memory: list[dict] = []
     no_business_learning_count = 0
     no_business_learning_window = getattr(cfg, "no_business_learning_window", 3)
     plateau_count = 0
@@ -327,6 +401,7 @@ async def main_async(args: argparse.Namespace) -> int:
         {},
         task,
     )
+    write_feedback_failures(accepted_dir, "dev", accepted_dev_results, task)
 
     for iteration in range(1, cfg.max_iterations + 1):
         if should_stop(
@@ -344,6 +419,17 @@ async def main_async(args: argparse.Namespace) -> int:
         current_prompt = prompt_path.read_text(encoding="utf-8")
         summary = _read_json(accepted_dir / "summary.json")
         failure_clusters = _read_json(accepted_dir / "failure-clusters.json")
+        feedback_failures = _read_json(accepted_dir / "feedback-failures.json")
+        has_primary_feedback = bool(feedback_failures.get("primary_groups"))
+        focused_group = (
+            select_focused_group(feedback_failures, focused_attempt_history)
+            if has_primary_feedback
+            else None
+        )
+        if has_primary_feedback and not focused_group:
+            no_business_learning_count = no_business_learning_window
+            last_phase = "focused_feedback_exhausted"
+            break
         failures = _read_failures(accepted_dir / "failures.jsonl")
         system, user = build_optimizer_messages(
             current_prompt,
@@ -352,6 +438,9 @@ async def main_async(args: argparse.Namespace) -> int:
             failures,
             recent_diffs,
             recent_delta_summaries,
+            feedback_failures=feedback_failures,
+            focused_feedback_group=focused_group,
+            failed_strategy_memory=failed_strategy_memory,
             task=task,
         )
         request = {"system": system, "user": user}
@@ -422,7 +511,11 @@ async def main_async(args: argparse.Namespace) -> int:
             task,
             accepted_dev_results,
             dev_results,
-            proposal.target_failures,
+            _target_failures_for_delta(
+                proposal.target_failures,
+                feedback_failures,
+                focused_group,
+            ),
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
         dev_delta_summary = summarize_candidate_delta(dev_delta)
@@ -432,25 +525,43 @@ async def main_async(args: argparse.Namespace) -> int:
             no_business_learning_count += 1
         dev_accuracy = _accuracy(dev_results, task)
         if dev_accuracy <= best_dev_accuracy:
-            recent_diffs.append(
-                _write_artifacts(
-                    run_dir,
-                    "dev",
-                    dev_results,
-                    current_prompt,
-                    proposal.prompt_file,
-                    request,
-                    response,
-                    task,
-                )
+            prompt_diff = _write_artifacts(
+                run_dir,
+                "dev",
+                dev_results,
+                current_prompt,
+                proposal.prompt_file,
+                request,
+                response,
+                task,
             )
+            recent_diffs.append(prompt_diff)
             recent_delta_summaries.append(dev_delta_summary)
+            _record_focused_attempt(
+                focused_group,
+                proposal.hypothesis,
+                dev_delta,
+                prompt_diff,
+                failed_strategy_memory,
+                focused_attempt_history,
+                run_dir,
+            )
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
             completed_iteration = iteration
             last_run_dir = run_dir.name
             last_phase = "dev"
             continue
+
+        _record_focused_attempt(
+            focused_group,
+            proposal.hypothesis,
+            dev_delta,
+            "",
+            failed_strategy_memory,
+            focused_attempt_history,
+            run_dir,
+        )
 
         full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
         full_accuracy = _accuracy(full_results, task)
@@ -513,6 +624,7 @@ async def main_async(args: argparse.Namespace) -> int:
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
             accepted_dev_results = dev_results
+            write_feedback_failures(run_dir, "dev", accepted_dev_results, task)
             accepted_dir = run_dir
             plateau_count = 0
             commit_prompt(

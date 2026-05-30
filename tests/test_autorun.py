@@ -273,7 +273,7 @@ async def test_autorun_stops_after_no_business_learning_window(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_no_business_learning_count_resets_on_rejected_business_improvement(tmp_path, monkeypatch):
+async def test_no_business_learning_stops_when_only_focused_group_regresses(tmp_path, monkeypatch):
     prompt = tmp_path / "prompts" / "ocr.js"
     prompt.parent.mkdir()
     prompt.write_text("accepted", encoding="utf-8")
@@ -335,11 +335,13 @@ async def test_no_business_learning_count_resets_on_rejected_business_improvemen
     await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
 
     stop = json.loads((_latest_session(tmp_path, "code") / "stop.json").read_text())
-    assert len(seen_requests) == 4
+    assert len(seen_requests) == 1
+    assert seen_requests[0]["focused_feedback_group"]["key"] == "missing_code"
     assert prompt.read_text(encoding="utf-8") == "accepted"
     assert stop["reason"] == "no_business_learning"
-    assert stop["iteration"] == 4
+    assert stop["iteration"] == 1
     assert stop["no_business_learning_count"] == 2
+    assert stop["last_phase"] == "focused_feedback_exhausted"
 
 
 @pytest.mark.asyncio
@@ -428,6 +430,178 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
     assert delta["target_failures_effect"]["row_targets"] == [
         {"target": "row 2", "row_number": 2, "outcome": "regressed"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_autorun_uses_dev_feedback_failures_in_optimizer_request(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    dev_sample = Sample(2, "dev.png", 0, "DEV-CODE", True)
+    full_only_sample = Sample(99, "full.png", 0, "FULL-CODE", True)
+    samples = [dev_sample, full_only_sample]
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    seen_payloads = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: samples)
+    monkeypatch.setattr(
+        autorun,
+        "split_samples",
+        lambda items, size: DatasetSplit(dev=[dev_sample], full=items),
+    )
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        prompt_text = prompt.read_text(encoding="utf-8")
+        actual_by_row = (
+            {2: "6338730878581133", 99: "4251976762454"}
+            if prompt_text == "accepted"
+            else {2: "still-wrong", 99: "unused"}
+        )
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": actual_by_row[item.row_number]}], "imageStatus": ["ok"]},
+            )
+            for item in items
+        ]
+
+    def fake_call(provider, model, system, user):
+        seen_payloads.append(json.loads(user))
+        return OptimizerProposal(
+            "h",
+            "e",
+            "r",
+            ["wrong_code_selected_non_redeemable_number"],
+            "candidate",
+        )
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    payload = seen_payloads[0]
+    assert payload["optimizer_background_evidence"]["summary"]["samples"] == 2
+    assert "representative_failures" not in payload
+    assert payload["optimizer_feedback_set"] == {"task": "code", "feedback_set": "dev"}
+    assert payload["focused_feedback_group"]["key"] == "wrong_code_selected_non_redeemable_number"
+    assert payload["focused_feedback_group"]["rows"] == [2]
+    assert payload["optimizer_background_evidence"]["inactive_primary_groups"] == []
+    assert "99" not in json.dumps(payload["focused_feedback_group"])
+    feedback_path = _latest_session(tmp_path, "code") / "run-000-baseline" / "feedback-failures.json"
+    assert json.loads(feedback_path.read_text())["primary_groups"][0]["rows"] == [2]
+    delta = json.loads((_latest_session(tmp_path, "code") / "run-001/dev-delta.json").read_text())
+    assert delta["target_failures_effect"]["row_targets"] == [
+        {
+            "target": "row 2",
+            "row_number": 2,
+            "outcome": "unchanged",
+        }
+    ]
+    assert delta["target_failures_effect"]["category_targets"] == []
+
+
+@pytest.mark.asyncio
+async def test_autorun_records_failed_memory_and_stops_after_primary_groups_exhausted(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    samples = [
+        Sample(2, "number.png", 0, "W0B053BJVLF9QJL", True),
+        Sample(3, "no-card.png", 0, "A6TEXPIABVJ9L7Z", True),
+    ]
+    cfg = types.SimpleNamespace(
+        dev_sample_size=2,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=5,
+        target_business_accuracy=101.0,
+        plateau_window=5,
+        no_business_learning_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    seen_payloads = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: samples)
+    monkeypatch.setattr(
+        autorun,
+        "split_samples",
+        lambda items, size: DatasetSplit(dev=items, full=items),
+    )
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                (
+                    {"status": 200, "data": [{"number": "6338730878581133"}], "imageStatus": ["ok"]}
+                    if item.row_number == 2
+                    else {"status": 200, "data": [], "imageStatus": ["no-card"]}
+                ),
+            )
+            for item in items
+        ]
+
+    def fake_call(provider, model, system, user):
+        payload = json.loads(user)
+        seen_payloads.append(payload)
+        return OptimizerProposal(
+            "same ineffective strategy",
+            "no target improvement",
+            "low",
+            [payload["focused_feedback_group"]["key"]],
+            f"candidate-{len(seen_payloads)}",
+        )
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    assert [payload["focused_feedback_group"]["key"] for payload in seen_payloads] == [
+        "wrong_code_selected_non_redeemable_number",
+        "no_card_false_negative",
+    ]
+    assert seen_payloads[1]["failed_strategy_memory"][0]["focused_group"] == (
+        "wrong_code_selected_non_redeemable_number"
+    )
+    session = _latest_session(tmp_path, "code")
+    stop = json.loads((session / "stop.json").read_text())
+    assert stop["reason"] == "no_business_learning"
+    assert stop["no_business_learning_count"] == 3
+    memory = json.loads((session / "run-001/failed-strategy-memory.json").read_text())
+    assert memory["entries"][0]["outcome"] == "unchanged"
+    assert not (session / "run-003").exists()
 
 
 @pytest.mark.asyncio
