@@ -30,6 +30,7 @@ class OptimizerConfig:
     target_business_accuracy: float
     plateau_window: int
     max_iterations: int
+    no_business_learning_window: int
     no_card_failure_threshold: float
     prompt_path: Path
     runs_dir: Path
@@ -49,6 +50,7 @@ class OptimizerConfig:
             target_business_accuracy=_float_env("TARGET_BUSINESS_ACCURACY", 99.0),
             plateau_window=_int_env("PLATEAU_WINDOW", 3),
             max_iterations=_int_env("MAX_ITERATIONS", 15),
+            no_business_learning_window=_int_env("NO_BUSINESS_LEARNING_WINDOW", 3),
             no_card_failure_threshold=_float_env("NO_CARD_FAILURE_THRESHOLD", 5.0),
             prompt_path=Path(_str_env("PROMPT_PATH", "prompts/ocr.js")),
             runs_dir=Path(_str_env("RUNS_DIR", "runs")),

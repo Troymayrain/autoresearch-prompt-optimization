@@ -34,8 +34,42 @@ def should_stop(
     plateau_count: int,
     plateau_window: int,
     max_iterations: int,
+    no_business_learning_count: int = 0,
+    no_business_learning_window: int = 3,
 ) -> bool:
-    return full_accuracy >= target or plateau_count >= plateau_window or iteration >= max_iterations
+    return bool(
+        stop_reason(
+            iteration,
+            full_accuracy,
+            target,
+            plateau_count,
+            plateau_window,
+            max_iterations,
+            no_business_learning_count,
+            no_business_learning_window,
+        )
+    )
+
+
+def stop_reason(
+    iteration: int,
+    full_accuracy: float,
+    target: float,
+    plateau_count: int,
+    plateau_window: int,
+    max_iterations: int,
+    no_business_learning_count: int,
+    no_business_learning_window: int,
+) -> str:
+    if full_accuracy >= target:
+        return "target_reached"
+    if no_business_learning_count >= no_business_learning_window:
+        return "no_business_learning"
+    if plateau_count >= plateau_window:
+        return "plateau"
+    if iteration >= max_iterations:
+        return "max_iterations"
+    return ""
 
 
 def _accuracy(results: Sequence[EvaluationResult], task: TaskName = "code") -> float:
@@ -127,9 +161,45 @@ def _read_failures(path: Path) -> list[dict]:
     return failures
 
 
+def _has_primary_learning(dev_delta: dict) -> bool:
+    return bool(dev_delta.get("improved_business_rows") or dev_delta.get("improved_type_rows"))
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_stop_artifact(
+    session_dir: Path,
+    task: TaskName,
+    reason: str,
+    iteration: int,
+    best_full_accuracy: float,
+    best_dev_accuracy: float,
+    target_accuracy: float,
+    plateau_count: int,
+    no_business_learning_count: int,
+    last_run_dir: str,
+    last_phase: str,
+) -> None:
+    _write_json(
+        session_dir / "stop.json",
+        {
+            "task": task,
+            "reason": reason,
+            "iteration": iteration,
+            "metrics": {
+                "best_full_accuracy": best_full_accuracy,
+                "best_dev_accuracy": best_dev_accuracy,
+                "target_accuracy": target_accuracy,
+            },
+            "plateau_count": plateau_count,
+            "no_business_learning_count": no_business_learning_count,
+            "last_run_dir": last_run_dir,
+            "last_phase": last_phase,
+        },
+    )
 
 
 def _write_artifacts(
@@ -229,6 +299,8 @@ async def main_async(args: argparse.Namespace) -> int:
     prompt_path = cfg.prompt_path
     recent_diffs: list[str] = []
     recent_delta_summaries: list[dict] = []
+    no_business_learning_count = 0
+    no_business_learning_window = getattr(cfg, "no_business_learning_window", 3)
     plateau_count = 0
 
     validate_prompt_file(prompt_path, cfg.node_binary)
@@ -242,6 +314,9 @@ async def main_async(args: argparse.Namespace) -> int:
     accepted_dev_results = _results_for_samples(full_results, split.dev)
     best_dev_accuracy = _accuracy(accepted_dev_results, task)
     accepted_dir = _run_dir(experiment_dir, 0)
+    completed_iteration = 0
+    last_run_dir = accepted_dir.name
+    last_phase = "full"
     _write_artifacts(
         accepted_dir,
         "full",
@@ -261,6 +336,8 @@ async def main_async(args: argparse.Namespace) -> int:
             plateau_count,
             cfg.plateau_window,
             cfg.max_iterations,
+            no_business_learning_count,
+            no_business_learning_window,
         ):
             break
 
@@ -296,6 +373,9 @@ async def main_async(args: argparse.Namespace) -> int:
                     task,
                 )
                 plateau_count += 1
+                completed_iteration = iteration
+                last_run_dir = run_dir.name
+                last_phase = "proposal_no_change"
                 break
 
             prompt_path.write_text(proposal.prompt_file, encoding="utf-8")
@@ -327,6 +407,9 @@ async def main_async(args: argparse.Namespace) -> int:
                     )
                 )
                 plateau_count += 1
+                completed_iteration = iteration
+                last_run_dir = run_dir.name
+                last_phase = "gate_failed"
                 break
         else:
             continue
@@ -343,6 +426,10 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
         recent_delta_summaries.append(summarize_candidate_delta(dev_delta))
+        if _has_primary_learning(dev_delta):
+            no_business_learning_count = 0
+        else:
+            no_business_learning_count += 1
         dev_accuracy = _accuracy(dev_results, task)
         if dev_accuracy <= best_dev_accuracy:
             recent_diffs.append(
@@ -359,6 +446,9 @@ async def main_async(args: argparse.Namespace) -> int:
             )
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
+            completed_iteration = iteration
+            last_run_dir = run_dir.name
+            last_phase = "dev"
             continue
 
         full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
@@ -375,6 +465,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 task,
             )
         )
+        completed_iteration = iteration
+        last_run_dir = run_dir.name
+        last_phase = "full"
         if full_accuracy > best_full_accuracy:
             if regression_samples is not None and regression_baseline is not None:
                 regression_results = await run_once(
@@ -401,6 +494,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     )
                     restore_prompt(prompt_path, current_prompt)
                     plateau_count += 1
+                    last_phase = "regression"
                     continue
                 _write_regression_gate(
                     run_dir,
@@ -411,6 +505,7 @@ async def main_async(args: argparse.Namespace) -> int:
                     candidate_regression,
                 )
                 regression_baseline = candidate_regression
+                last_phase = "regression"
             else:
                 _write_regression_not_configured(run_dir, task)
             best_full_accuracy = full_accuracy
@@ -426,6 +521,33 @@ async def main_async(args: argparse.Namespace) -> int:
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
 
+    reason = stop_reason(
+        completed_iteration,
+        best_full_accuracy,
+        cfg.target_business_accuracy,
+        plateau_count,
+        cfg.plateau_window,
+        cfg.max_iterations,
+        no_business_learning_count,
+        no_business_learning_window,
+    )
+    _write_stop_artifact(
+        experiment_dir,
+        task,
+        reason,
+        completed_iteration,
+        best_full_accuracy,
+        best_dev_accuracy,
+        cfg.target_business_accuracy,
+        plateau_count,
+        no_business_learning_count,
+        last_run_dir,
+        last_phase,
+    )
+    print(
+        f"run_session={_latest_path(cfg.runs_dir, task, experiment_dir.name)} "
+        f"stop_reason={reason}"
+    )
     return 0
 
 

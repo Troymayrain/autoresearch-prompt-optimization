@@ -7,7 +7,7 @@ import pytest
 from openpyxl import load_workbook
 
 import optimizer.autorun as autorun
-from optimizer.autorun import _accuracy, should_stop
+from optimizer.autorun import _accuracy, should_stop, stop_reason
 from optimizer.dataset import DatasetSplit, Sample
 from optimizer.evaluation import EvaluationResult
 from optimizer.llm import OptimizerProposal
@@ -65,6 +65,48 @@ def test_stop_when_max_iterations_reached():
     assert should_stop(iteration=15, full_accuracy=90.0, target=99.0, plateau_count=0, plateau_window=3, max_iterations=15)
 
 
+def test_stop_reason_priority():
+    assert (
+        stop_reason(
+            iteration=15,
+            full_accuracy=99.0,
+            target=99.0,
+            plateau_count=3,
+            plateau_window=3,
+            max_iterations=15,
+            no_business_learning_count=3,
+            no_business_learning_window=3,
+        )
+        == "target_reached"
+    )
+    assert (
+        stop_reason(
+            iteration=15,
+            full_accuracy=90.0,
+            target=99.0,
+            plateau_count=3,
+            plateau_window=3,
+            max_iterations=15,
+            no_business_learning_count=3,
+            no_business_learning_window=3,
+        )
+        == "no_business_learning"
+    )
+    assert (
+        stop_reason(
+            iteration=15,
+            full_accuracy=90.0,
+            target=99.0,
+            plateau_count=3,
+            plateau_window=3,
+            max_iterations=15,
+            no_business_learning_count=0,
+            no_business_learning_window=3,
+        )
+        == "plateau"
+    )
+
+
 def test_continue_before_limits():
     assert not should_stop(iteration=2, full_accuracy=90.0, target=99.0, plateau_count=1, plateau_window=3, max_iterations=15)
 
@@ -101,7 +143,7 @@ def test_accuracy_uses_type_score_for_type_task():
 
 
 @pytest.mark.asyncio
-async def test_autorun_creates_isolated_session_and_latest_pointer(tmp_path, monkeypatch):
+async def test_autorun_creates_isolated_session_and_latest_pointer(tmp_path, monkeypatch, capsys):
     prompt = tmp_path / "prompts" / "ocr.js"
     prompt.parent.mkdir()
     prompt.write_text("valid", encoding="utf-8")
@@ -155,8 +197,149 @@ async def test_autorun_creates_isolated_session_and_latest_pointer(tmp_path, mon
         "path": f"runs/card-ocr-prompt-opt-code/{session_dir}",
     }
     assert (session / "run-000-baseline" / "summary.json").exists()
+    stop = json.loads((session / "stop.json").read_text())
+    assert stop["reason"] == "max_iterations"
+    assert stop["iteration"] == 0
+    assert stop["last_run_dir"] == "run-000-baseline"
+    assert stop["last_phase"] == "full"
+    assert f"run_session=runs/card-ocr-prompt-opt-code/{session_dir}" in capsys.readouterr().out
     assert not (task_root / "run-000-baseline" / "summary.json").exists()
     assert legacy_run.exists()
+
+
+@pytest.mark.asyncio
+async def test_autorun_stops_after_no_business_learning_window(tmp_path, monkeypatch, capsys):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    sample = Sample(2, "a.png", 0, "A", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=5,
+        target_business_accuracy=101.0,
+        plateau_window=99,
+        no_business_learning_window=2,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    proposals = iter(
+        [
+            OptimizerProposal("h1", "e1", "r1", ["row 2"], "bad-one"),
+            OptimizerProposal("h2", "e2", "r2", ["row 2"], "bad-two"),
+        ]
+    )
+    seen_requests = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "call_optimizer_llm", lambda provider, model, system, user: seen_requests.append(json.loads(user)) or next(proposals))
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        actual = "A" if prompt.read_text(encoding="utf-8") == "accepted" else "B"
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": actual}], "imageStatus": ["ok"]},
+            )
+            for item in samples
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    session = _latest_session(tmp_path, "code")
+    stop = json.loads((session / "stop.json").read_text())
+    assert len(seen_requests) == 2
+    assert prompt.read_text(encoding="utf-8") == "accepted"
+    assert stop["reason"] == "no_business_learning"
+    assert stop["iteration"] == 2
+    assert stop["last_run_dir"] == "run-002"
+    assert stop["last_phase"] == "dev"
+    assert stop["no_business_learning_count"] == 2
+    assert "stop_reason=no_business_learning" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_no_business_learning_count_resets_on_rejected_business_improvement(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    samples = [
+        Sample(2, "a.png", 0, "A", True),
+        Sample(3, "b.png", 0, "B", True),
+    ]
+    cfg = types.SimpleNamespace(
+        dev_sample_size=2,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=6,
+        target_business_accuracy=101.0,
+        plateau_window=99,
+        no_business_learning_window=2,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    proposals = iter(
+        [
+            OptimizerProposal("h1", "e1", "r1", ["row 2"], "bad-one"),
+            OptimizerProposal("h2", "e2", "r2", ["row 3"], "mixed"),
+            OptimizerProposal("h3", "e3", "r3", ["row 2"], "bad-three"),
+            OptimizerProposal("h4", "e4", "r4", ["row 2"], "bad-four"),
+        ]
+    )
+    seen_requests = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: samples)
+    monkeypatch.setattr(autorun, "split_samples", lambda items, size: DatasetSplit(dev=items, full=items))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "call_optimizer_llm", lambda provider, model, system, user: seen_requests.append(json.loads(user)) or next(proposals))
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        prompt_text = prompt.read_text(encoding="utf-8")
+        actual_by_row = {
+            "accepted": {2: "A", 3: ""},
+            "mixed": {2: "MISS", 3: "B"},
+        }.get(prompt_text, {2: "MISS", 3: "MISS"})
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": actual_by_row[item.row_number]}], "imageStatus": ["ok"]},
+            )
+            for item in items
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    stop = json.loads((_latest_session(tmp_path, "code") / "stop.json").read_text())
+    assert len(seen_requests) == 4
+    assert prompt.read_text(encoding="utf-8") == "accepted"
+    assert stop["reason"] == "no_business_learning"
+    assert stop["iteration"] == 4
+    assert stop["no_business_learning_count"] == 2
 
 
 @pytest.mark.asyncio
