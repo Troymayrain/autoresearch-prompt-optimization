@@ -142,6 +142,9 @@ def build_optimizer_messages(
     failures: list[dict[str, Any]],
     recent_diffs: list[str],
     candidate_delta_summaries: Sequence[dict[str, Any]] | None = None,
+    feedback_failures: dict[str, Any] | None = None,
+    focused_feedback_group: dict[str, Any] | None = None,
+    failed_strategy_memory: Sequence[dict[str, Any]] | None = None,
     task: TaskName = "code",
 ) -> tuple[str, str]:
     boundary = _mutation_boundary(task)
@@ -149,7 +152,12 @@ def build_optimizer_messages(
         "You improve a gift card OCR prompt. Return JSON only with exactly "
         "hypothesis, expected_effect, risk, target_failures, and prompt_file. "
         "target_failures must be a non-empty JSON array of row numbers or "
-        "failure categories from the provided evidence. Only the prompt file may "
+        "failure categories from the provided evidence. When optimizer_feedback_set "
+        "is present, row-level target_failures must come from its Dev Evaluation Set "
+        "primary_groups; secondary_groups are secondary, and Full Evaluation Set "
+        "evidence is aggregate background only. When focused_feedback_group is present, "
+        "it is the only active row-level target source; inactive groups are background. "
+        "Do not repeat failed_strategy_memory strategies. Only the prompt file may "
         "change; do not change scoring, runtime code, datasets, or post-processing. "
         "When Candidate Evaluation Delta evidence is present, treat it as the primary "
         "feedback source; strict-only rows are secondary and infrastructure rows are ignored. "
@@ -164,13 +172,34 @@ def build_optimizer_messages(
         "current_prompt": current_prompt,
         "summary": summary,
         "failure_clusters": failure_clusters,
-        "representative_failures": failures[:30],
-        "target_failure_guidance": (
-            "Set target_failures to row numbers or failure_category values from "
-            "representative_failures and failure_clusters."
+        "target_failure_guidance": _target_failure_guidance(
+            feedback_failures,
+            focused_feedback_group,
+            bool(failed_strategy_memory),
         ),
         "recent_diffs": recent_diffs[-5:],
     }
+    if feedback_failures:
+        payload["optimizer_feedback_set"] = (
+            _feedback_metadata(feedback_failures)
+            if focused_feedback_group
+            else feedback_failures
+        )
+        if focused_feedback_group:
+            payload["focused_feedback_group"] = focused_feedback_group
+        payload["optimizer_background_evidence"] = {
+            "summary": summary,
+            "failure_clusters": failure_clusters,
+            "inactive_primary_groups": _inactive_primary_groups(
+                feedback_failures,
+                focused_feedback_group,
+            ),
+            "secondary_groups": feedback_failures.get("secondary_groups", []),
+        }
+    else:
+        payload["representative_failures"] = failures[:30]
+    if failed_strategy_memory:
+        payload["failed_strategy_memory"] = list(failed_strategy_memory)
     if candidate_delta_summaries:
         payload["candidate_evaluation_delta_summary"] = list(candidate_delta_summaries)[-3:]
         payload["feedback_priority"] = (
@@ -180,6 +209,54 @@ def build_optimizer_messages(
         )
     user = json.dumps(payload, ensure_ascii=False, indent=2)
     return system, user
+
+
+def _feedback_metadata(feedback_failures: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: feedback_failures[key]
+        for key in ("task", "feedback_set")
+        if key in feedback_failures
+    }
+
+
+def _inactive_primary_groups(
+    feedback_failures: dict[str, Any],
+    focused_feedback_group: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    focused_key = str((focused_feedback_group or {}).get("key", "")).strip()
+    return [
+        group
+        for group in feedback_failures.get("primary_groups", [])
+        if str(group.get("key", "")).strip() != focused_key
+    ]
+
+
+def _target_failure_guidance(
+    feedback_failures: dict[str, Any] | None,
+    focused_feedback_group: dict[str, Any] | None = None,
+    has_failed_strategy_memory: bool = False,
+) -> str:
+    failed_memory_guidance = (
+        " If failed_strategy_memory is present, do not repeat those strategies."
+        if has_failed_strategy_memory
+        else ""
+    )
+    if focused_feedback_group:
+        return (
+            "Set target_failures only to focused_feedback_group.key or row numbers "
+            "from focused_feedback_group.rows. inactive primary groups and "
+            f"secondary_groups are background, not active row-level targets.{failed_memory_guidance}"
+        )
+    if feedback_failures:
+        return (
+            "Set target_failures to row numbers from optimizer_feedback_set.primary_groups.rows "
+            "or primary_groups key values. Use secondary_groups only for secondary cleanup after "
+            f"primary business failures are addressed.{failed_memory_guidance}"
+        )
+    return (
+        "Set target_failures to row numbers or failure_category values from "
+        "representative_failures and failure_clusters."
+    )
 
 
 def call_optimizer_llm(provider: str, model: str, system: str, user: str) -> OptimizerProposal:

@@ -145,6 +145,88 @@ def test_build_optimizer_messages_requests_target_failure_evidence():
     assert "failure_category" in data["target_failure_guidance"]
 
 
+def test_build_optimizer_messages_uses_focused_group_as_only_active_target_source():
+    feedback_failures = {
+        "task": "code",
+        "feedback_set": "dev",
+        "primary_groups": [
+            {
+                "key": "wrong_code_ocr_confusion",
+                "rows": [7],
+                "examples": [{"row_number": 7, "failure_category": "wrong_code"}],
+            },
+            {
+                "key": "no_card_false_negative",
+                "rows": [9],
+                "examples": [{"row_number": 9, "failure_category": "no_card"}],
+            },
+        ],
+        "secondary_groups": [{"key": "extra_code_output", "rows": [8], "examples": []}],
+    }
+    focused_group = feedback_failures["primary_groups"][0]
+
+    system, user = build_optimizer_messages(
+        "prompt",
+        {"business_accuracy": 90.0},
+        {"wrong_code": 2, "extra_code": 9},
+        [{"row_number": 99, "failure_category": "wrong_code"}],
+        [],
+        feedback_failures=feedback_failures,
+        focused_feedback_group=focused_group,
+    )
+
+    data = json.loads(user)
+    assert "Dev Evaluation Set" in system
+    assert data["focused_feedback_group"] == focused_group
+    assert data["optimizer_feedback_set"] == {"task": "code", "feedback_set": "dev"}
+    assert data["optimizer_background_evidence"]["inactive_primary_groups"] == [
+        feedback_failures["primary_groups"][1]
+    ]
+    assert data["optimizer_background_evidence"]["secondary_groups"] == [
+        {"key": "extra_code_output", "rows": [8], "examples": []}
+    ]
+    assert data["optimizer_background_evidence"]["failure_clusters"] == {
+        "wrong_code": 2,
+        "extra_code": 9,
+    }
+    assert "representative_failures" not in data
+    assert "row 99" not in json.dumps(data)
+    assert "focused_feedback_group" in data["target_failure_guidance"]
+    assert "inactive" in data["target_failure_guidance"]
+
+
+def test_build_optimizer_messages_includes_failed_strategy_memory_as_prohibition():
+    failed_strategy_memory = [
+        {
+            "focused_group": "wrong_code_ocr_confusion",
+            "strategy_summary": "tighten B/8 reading",
+            "outcome": "unchanged",
+            "target_rows": [7],
+        }
+    ]
+
+    system, user = build_optimizer_messages(
+        "prompt",
+        {},
+        {},
+        [],
+        [],
+        feedback_failures={
+            "task": "code",
+            "feedback_set": "dev",
+            "primary_groups": [],
+            "secondary_groups": [],
+        },
+        focused_feedback_group={"key": "wrong_code_ocr_confusion", "rows": [7]},
+        failed_strategy_memory=failed_strategy_memory,
+    )
+
+    data = json.loads(user)
+    assert data["failed_strategy_memory"] == failed_strategy_memory
+    assert "Do not repeat failed_strategy_memory" in system
+    assert "do not repeat" in data["target_failure_guidance"]
+
+
 def test_build_optimizer_messages_prioritizes_candidate_delta_over_recent_diffs():
     system, user = build_optimizer_messages(
         "prompt",
