@@ -28,6 +28,34 @@ _Avoid_: Gift card code evaluation set, metadata evaluation set
 A manually labeled dataset for gift card code recognition optimization. Each row contains `card_image`, `origin`, and `md5_card_number`.
 _Avoid_: Card type evaluation set, metadata evaluation set
 
+**Full Evaluation Set**:
+The complete routine evaluation set used to report overall optimization quality and acceptance outcomes. It may provide aggregate background evidence for optimizer proposals, but it is not the source of targetable failures during normal optimization.
+_Avoid_: Dev evaluation set, optimizer feedback set, holdout evaluation set
+
+**Dev Evaluation Set**:
+A manually labeled routine feedback subset for prompt optimization. It is used to compare candidate prompts with the Accepted Prompt on targetable cases during normal optimization.
+_Avoid_: Full evaluation set, holdout evaluation set, regression evaluation set
+
+**Optimizer Feedback Set**:
+The evaluation set used to choose targetable failures and feedback for automatic optimizer proposals. For Gift Card Code Recognition Optimization, it is the Dev Evaluation Set so target failures can be checked again through Candidate Evaluation Delta.
+_Avoid_: Full evaluation set, holdout evaluation set, regression evaluation set
+
+**Feedback Failure Group**:
+A group of unresolved Optimizer Feedback Set failures that share the same business error pattern. It describes a rule-level optimization target instead of asking the optimizer to memorize individual rows.
+_Avoid_: Full failure cluster, regression candidate, optimizer background evidence
+
+**Focused Feedback Attempt**:
+A candidate prompt attempt that targets exactly one primary Feedback Failure Group from the Optimizer Feedback Set. Other groups may remain background evidence, but they are not active row-level targets for that attempt.
+_Avoid_: multi-group optimizer proposal, full evaluation target, secondary cleanup attempt
+
+**Failed Strategy Memory**:
+Run-local evidence that a specific strategy for a Feedback Failure Group did not improve the targeted rows or caused regressions. It discourages repeating the same strategy, but it is not a global experiment log or a Regression Evaluation Set.
+_Avoid_: global experiment log, regression candidate, accepted prompt history
+
+**Optimizer Background Evidence**:
+Aggregate evaluation evidence that may help the optimizer understand overall failure shape, but must not be treated as targetable row-level feedback.
+_Avoid_: Optimizer feedback set, candidate evaluation delta, regression evaluation set
+
 **Business Code Match**:
 A code match focused on redeemability. It allows format differences that do not change whether the redeemable code was found.
 _Avoid_: Strict code match, exact text match
@@ -35,6 +63,10 @@ _Avoid_: Strict code match, exact text match
 **Strict Code Match**:
 A code match focused on output cleanliness and strict character presentation. It is useful for detecting formatting differences, extra output, and strict character issues, but it is not the primary acceptance target for Gift Card Code Recognition Optimization.
 _Avoid_: Business code match, redeemability match
+
+**Secondary Code Cleanliness Signal**:
+A non-primary signal for output cleanliness, including extra code output and strict formatting issues. It should not drive primary optimizer targets while Business Code Match failures remain.
+_Avoid_: Business code match, targetable business failure, regression evaluation set
 
 **Regression Evaluation Set**:
 A human-maintained, manually confirmed guard dataset for an optimization goal. It contains cases that should already pass and must not regress when accepting a prompt change. Optimizer runs may read it, but must not automatically add cases to it.
