@@ -1,0 +1,129 @@
+from optimizer.candidate_delta import compare_candidate_delta
+from optimizer.dataset import Sample
+from optimizer.evaluation import EvaluationResult
+
+
+def _code_result(row, expected, actual, *, status=200, image_status="ok"):
+    return EvaluationResult.from_ocr_response(
+        Sample(row, f"{row}.png", 0, expected, True),
+        {
+            "status": status,
+            "data": [{"number": item} for item in actual],
+            "imageStatus": [image_status],
+        },
+        task="code",
+    )
+
+
+def _type_result(row, expected, actual, *, status=200, image_status="ok"):
+    return EvaluationResult.from_ocr_response(
+        Sample(row, f"{row}.png", 0, expected, True),
+        {
+            "status": status,
+            "data": [{"type": item} for item in actual],
+            "imageStatus": [image_status],
+        },
+        task="type",
+    )
+
+
+def test_code_delta_groups_business_and_secondary_changes():
+    accepted = [
+        _code_result(2, "ABC", ["MISS"]),
+        _code_result(3, "AAA\nBBB", ["AAA", "BBB"]),
+        _code_result(4, "CCC", ["MISS"]),
+        _code_result(5, "OIS", ["015"]),
+        _code_result(6, "DDD", ["DDD"]),
+    ]
+    candidate = [
+        _code_result(2, "ABC", ["ABC"]),
+        _code_result(3, "AAA\nBBB", ["AAA"]),
+        _code_result(4, "CCC", ["WRONG"]),
+        _code_result(5, "OIS", ["OIS"]),
+        _code_result(6, "DDD", ["DDD", "EXTRA"]),
+    ]
+
+    delta = compare_candidate_delta("code", accepted, candidate)
+
+    assert delta["primary_metric"] == {
+        "name": "business_code_match",
+        "accepted_correct": 4,
+        "candidate_correct": 4,
+        "total": 6,
+        "delta": 0,
+    }
+    assert delta["secondary_metric"] == {
+        "name": "strict_code_match",
+        "accepted_correct": 3,
+        "candidate_correct": 4,
+        "total": 6,
+        "delta": 1,
+    }
+    assert [row["row_number"] for row in delta["improved_business_rows"]] == [2]
+    assert delta["regressed_business_rows"] == [
+        {
+            "row_number": 3,
+            "expected": "AAA\nBBB",
+            "accepted_actual": ["AAA", "BBB"],
+            "candidate_actual": ["AAA"],
+            "accepted_failure_category": "",
+            "candidate_failure_category": "wrong_code",
+            "business_total": 2,
+            "accepted_business_correct": 2,
+            "candidate_business_correct": 1,
+            "business_delta": -1,
+            "accepted_strict_correct": 2,
+            "candidate_strict_correct": 1,
+            "strict_delta": -1,
+        }
+    ]
+    assert [row["row_number"] for row in delta["persistent_business_failure_rows"]] == [4]
+    assert [row["row_number"] for row in delta["strict_only_changed_rows"]] == [5, 6]
+
+
+def test_code_delta_separates_infra_and_keeps_no_card_business_relevant():
+    accepted = [
+        _code_result(2, "ABC", ["MISS"]),
+        _code_result(3, "AAA", ["AAA"]),
+    ]
+    candidate = [
+        _code_result(2, "ABC", [], image_status="no-card"),
+        _code_result(3, "AAA", [], image_status="error-download"),
+    ]
+
+    delta = compare_candidate_delta("code", accepted, candidate)
+
+    assert [row["row_number"] for row in delta["persistent_business_failure_rows"]] == [2]
+    assert [row["row_number"] for row in delta["infra_failure_rows"]] == [3]
+    assert delta["persistent_business_failure_rows"][0]["candidate_failure_category"] == "no_card"
+    assert delta["infra_failure_rows"][0]["candidate_failure_category"] == "download_error"
+
+
+def test_type_delta_uses_type_groups_without_code_categories():
+    accepted = [
+        _type_result(2, "Physics", ["E-codes"]),
+        _type_result(3, "Physics", ["Physics"]),
+        _type_result(4, "E-codes", ["Physics"]),
+        _type_result(5, "Physics", []),
+    ]
+    candidate = [
+        _type_result(2, "Physics", ["Physics"]),
+        _type_result(3, "Physics", ["E-codes"]),
+        _type_result(4, "E-codes", ["Physics"]),
+        _type_result(5, "Physics", []),
+    ]
+
+    delta = compare_candidate_delta("type", accepted, candidate)
+
+    assert delta["primary_metric"] == {
+        "name": "card_type_match",
+        "accepted_correct": 1,
+        "candidate_correct": 1,
+        "total": 3,
+        "delta": 0,
+    }
+    assert "improved_business_rows" not in delta
+    assert [row["row_number"] for row in delta["improved_type_rows"]] == [2]
+    assert [row["row_number"] for row in delta["regressed_type_rows"]] == [3]
+    assert [row["row_number"] for row in delta["persistent_type_failure_rows"]] == [4]
+    assert [row["row_number"] for row in delta["not_evaluable_rows"]] == [5]
