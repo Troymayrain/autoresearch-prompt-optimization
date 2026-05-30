@@ -45,7 +45,7 @@ def build_failed_strategy_memory(
     target_outcomes = _target_outcomes(dev_delta, rows)
     if regressed_rows or "regressed" in target_outcomes:
         outcome = "regressed"
-    elif "improved" in target_outcomes or dev_delta.get("improved_business_rows"):
+    elif "improved" in target_outcomes:
         return None
     else:
         outcome = "unchanged"
@@ -58,6 +58,10 @@ def build_failed_strategy_memory(
         "regressed_rows": regressed_rows,
         "prompt_diff_summary": _prompt_diff_summary(prompt_diff, line_limit),
     }
+
+
+def focused_target_improved(dev_delta: dict, target_rows: Sequence[int]) -> bool:
+    return "improved" in _target_outcomes(dev_delta, _row_numbers(target_rows))
 
 
 def _ordered_primary_groups(feedback_failures: dict) -> list[dict]:

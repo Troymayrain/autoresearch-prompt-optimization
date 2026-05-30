@@ -1,4 +1,8 @@
-from optimizer.focused_feedback import build_failed_strategy_memory, select_focused_group
+from optimizer.focused_feedback import (
+    build_failed_strategy_memory,
+    focused_target_improved,
+    select_focused_group,
+)
 
 
 def test_select_focused_group_uses_fixed_primary_priority():
@@ -136,3 +140,28 @@ def test_build_failed_strategy_memory_ignores_improved_attempts():
     )
 
     assert entry is None
+
+
+def test_build_failed_strategy_memory_records_unchanged_target_despite_unrelated_improvement():
+    dev_delta = {
+        "improved_business_rows": [{"row_number": 9}],
+        "persistent_business_failure_rows": [{"row_number": 330}],
+        "target_failures_effect": {
+            "row_targets": [
+                {"row_number": 330, "outcome": "unchanged"},
+                {"row_number": 9, "outcome": "improved"},
+            ],
+        },
+    }
+
+    entry = build_failed_strategy_memory(
+        focused_group="wrong_code_selected_non_redeemable_number",
+        strategy_summary="prefer alphanumeric code",
+        target_rows=[330],
+        dev_delta=dev_delta,
+        prompt_diff="+prefer alphanumeric\n",
+    )
+
+    assert entry["outcome"] == "unchanged"
+    assert not focused_target_improved(dev_delta, [330])
+    assert focused_target_improved(dev_delta, [9])

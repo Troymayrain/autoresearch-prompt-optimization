@@ -13,7 +13,11 @@ from optimizer.candidate_delta import compare_candidate_delta, summarize_candida
 from optimizer.config import OptimizerConfig
 from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
 from optimizer.evaluation import EvaluationResult, evaluate_samples
-from optimizer.focused_feedback import build_failed_strategy_memory, select_focused_group
+from optimizer.focused_feedback import (
+    build_failed_strategy_memory,
+    focused_target_improved,
+    select_focused_group,
+)
 from optimizer.git_control import commit_prompt, restore_prompt
 from optimizer.llm import build_optimizer_messages, call_optimizer_llm
 from optimizer.node_runner import OcrRunner
@@ -178,7 +182,8 @@ def _target_failures_for_delta(
 ) -> list[str]:
     group_rows = {}
     if focused_feedback_group:
-        groups = [focused_feedback_group]
+        rows = focused_feedback_group.get("rows", [])
+        return [f"row {row}" for row in rows] if isinstance(rows, list) else []
     else:
         groups = [
             group
@@ -226,7 +231,7 @@ def _record_focused_attempt(
         failed_strategy_memory.append(entry)
         focused_attempt_history.append(entry)
         _write_json(run_dir / "failed-strategy-memory.json", {"entries": failed_strategy_memory})
-    elif _has_primary_learning(dev_delta):
+    elif focused_target_improved(dev_delta, rows):
         focused_attempt_history.append(
             {
                 "focused_group": group_key,

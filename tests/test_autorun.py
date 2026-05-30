@@ -685,6 +685,84 @@ async def test_no_business_learning_waits_for_all_focused_primary_groups(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_autorun_failed_memory_uses_focused_target_not_unrelated_improvement(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    focused_sample = Sample(2, "number.png", 0, "W0B053BJVLF9QJL", True)
+    unrelated_dev_sample = Sample(3, "missing.png", 0, "MISSING", True)
+    full_guard_sample = Sample(99, "guard.png", 0, "SAFE", True)
+    samples = [focused_sample, unrelated_dev_sample, full_guard_sample]
+    cfg = types.SimpleNamespace(
+        dev_sample_size=2,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=2,
+        target_business_accuracy=101.0,
+        plateau_window=9,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    seen_groups = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: samples)
+    monkeypatch.setattr(
+        autorun,
+        "split_samples",
+        lambda items, size: DatasetSplit(dev=items[:2], full=items),
+    )
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        candidate = prompt.read_text(encoding="utf-8") != "accepted"
+        results = []
+        for item in items:
+            actual_by_row = {
+                2: "6338730878581133",
+                3: "MISSING" if candidate else "",
+                99: "" if candidate else "SAFE",
+            }
+            actual = actual_by_row[item.row_number]
+            results.append(
+                EvaluationResult.from_ocr_response(
+                    item,
+                    {
+                        "status": 200,
+                        "data": [{"number": actual}] if actual else [],
+                        "imageStatus": ["ok"],
+                    },
+                )
+            )
+        return results
+
+    def fake_call(provider, model, system, user):
+        payload = json.loads(user)
+        group_key = payload["focused_feedback_group"]["key"]
+        seen_groups.append(group_key)
+        return OptimizerProposal("h", "e", "r", [group_key], f"candidate-{len(seen_groups)}")
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    assert seen_groups == ["wrong_code_selected_non_redeemable_number", "missing_code"]
+    session = _latest_session(tmp_path, "code")
+    memory = json.loads((session / "run-001/failed-strategy-memory.json").read_text())
+    assert memory["entries"][0]["focused_group"] == "wrong_code_selected_non_redeemable_number"
+    assert memory["entries"][0]["outcome"] == "unchanged"
+
+
+@pytest.mark.asyncio
 async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_path, monkeypatch):
     prompt = tmp_path / "prompts" / "ocr.js"
     prompt.parent.mkdir()
