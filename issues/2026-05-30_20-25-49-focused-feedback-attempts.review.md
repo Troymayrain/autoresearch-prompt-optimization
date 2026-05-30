@@ -59,3 +59,32 @@ Follow-up issues added:
 
 - `SPEC-09`: Preserve focused stop reason priority when no-business is masked.
 - `REVIEW-03`: Re-run follow-up review after stop attribution fix.
+
+## REVIEW-03
+
+Verdict: `vision_met`
+
+Reviewer: same-model sub-agent (`019e7928-d674-7003-a31d-da758536aa41`)
+
+Evidence checked:
+
+- Approved PRD and prior review findings
+- Follow-up diff: `git diff 6676d28..HEAD`
+- Latest stop attribution fix in commit `d02924f`
+- Verification evidence: `uv run pytest -q` reported `155 passed`
+
+Findings:
+
+- None.
+
+Scope verified as satisfactory:
+
+- No-business-learning waits until no eligible primary focused group remains.
+- Final `stop.json.reason` uses the same focused eligibility mask as the loop.
+- Focused outcome classification reads active target-row outcomes, not unrelated global improvements.
+- Prompt gate, dev rejection, regression gate, accepted prompt movement, and restore paths remain in place.
+- Evidence remains artifact/unit-level. No live OCR or production E2E validation was claimed.
+
+Follow-up issues added:
+
+- None.
