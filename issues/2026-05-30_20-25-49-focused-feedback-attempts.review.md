@@ -31,3 +31,31 @@ Follow-up issues added:
 - `SPEC-07`: Make no-business-learning wait for focused group exhaustion.
 - `SPEC-08`: Classify failed strategy by focused target rows.
 - `REVIEW-02`: Re-run vision review after follow-up fixes.
+
+## REVIEW-02
+
+Verdict: `gaps_found`
+
+Reviewer: same-model sub-agent (`019e791e-16ca-7e20-825e-e40af528118f`)
+
+Evidence checked:
+
+- Approved PRD: `docs/prd/focused-feedback-attempts.md`
+- REVIEW-01 findings in this review log
+- Follow-up diff: `git diff 6676d28..HEAD`
+- Verification evidence: `uv run pytest -q` reported `153 passed`
+
+Findings:
+
+1. `optimizer/autorun.py:417` masks `no_business_learning_count` while eligible focused groups remain for the pre-iteration `should_stop()` call, but final stop artifact generation still calls `stop_reason()` with the real `no_business_learning_count`. Because `stop_reason()` prioritizes no-business-learning before plateau and max-iterations, `stop.json.reason` can still overstate the stop as `no_business_learning`.
+
+Scope verified as satisfactory:
+
+- SPEC-08 appears closed: focused outcome classification now reads `target_failures_effect` for the active focused rows.
+- No cross-session memory, HTML contact sheet, review import, dataset mutation, or accepted-prompt movement on rejected candidates was found.
+- Evidence remains artifact/unit-level only. No live OCR or production E2E validation was claimed.
+
+Follow-up issues added:
+
+- `SPEC-09`: Preserve focused stop reason priority when no-business is masked.
+- `REVIEW-03`: Re-run follow-up review after stop attribution fix.
