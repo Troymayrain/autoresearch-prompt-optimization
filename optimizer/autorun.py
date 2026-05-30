@@ -404,18 +404,6 @@ async def main_async(args: argparse.Namespace) -> int:
     write_feedback_failures(accepted_dir, "dev", accepted_dev_results, task)
 
     for iteration in range(1, cfg.max_iterations + 1):
-        if should_stop(
-            iteration - 1,
-            best_full_accuracy,
-            cfg.target_business_accuracy,
-            plateau_count,
-            cfg.plateau_window,
-            cfg.max_iterations,
-            no_business_learning_count,
-            no_business_learning_window,
-        ):
-            break
-
         current_prompt = prompt_path.read_text(encoding="utf-8")
         summary = _read_json(accepted_dir / "summary.json")
         failure_clusters = _read_json(accepted_dir / "failure-clusters.json")
@@ -426,6 +414,17 @@ async def main_async(args: argparse.Namespace) -> int:
             if has_primary_feedback
             else None
         )
+        if should_stop(
+            iteration - 1,
+            best_full_accuracy,
+            cfg.target_business_accuracy,
+            plateau_count,
+            cfg.plateau_window,
+            cfg.max_iterations,
+            0 if has_primary_feedback else no_business_learning_count,
+            no_business_learning_window,
+        ):
+            break
         if has_primary_feedback and not focused_group:
             no_business_learning_count = no_business_learning_window
             last_phase = "focused_feedback_exhausted"
