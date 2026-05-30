@@ -145,6 +145,37 @@ def test_build_optimizer_messages_requests_target_failure_evidence():
     assert "failure_category" in data["target_failure_guidance"]
 
 
+def test_build_optimizer_messages_prioritizes_candidate_delta_over_recent_diffs():
+    system, user = build_optimizer_messages(
+        "prompt",
+        {},
+        {},
+        [],
+        ["diff-old"],
+        candidate_delta_summaries=[
+            {
+                "primary_metric": {"name": "business_code_match", "delta": 0},
+                "strict_only_changed_rows": [{"row_number": 7}],
+                "infra_failure_rows": [{"row_number": 9}],
+            }
+        ],
+    )
+
+    data = json.loads(user)
+    assert "Candidate Evaluation Delta" in system
+    assert data["candidate_evaluation_delta_summary"] == [
+        {
+            "primary_metric": {"name": "business_code_match", "delta": 0},
+            "strict_only_changed_rows": [{"row_number": 7}],
+            "infra_failure_rows": [{"row_number": 9}],
+        }
+    ]
+    assert data["recent_diffs"] == ["diff-old"]
+    assert "recent_diffs are auxiliary" in data["feedback_priority"]
+    assert "strict-only" in data["feedback_priority"]
+    assert "infrastructure" in data["feedback_priority"]
+
+
 def test_call_optimizer_llm_rejects_unknown_provider_without_network():
     with pytest.raises(ValueError, match="unsupported optimizer provider"):
         call_optimizer_llm("local", "model", "system", "user")

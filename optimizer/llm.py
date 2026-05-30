@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 from optimizer.dataset import TaskName
 
@@ -141,6 +141,7 @@ def build_optimizer_messages(
     failure_clusters: dict[str, Any],
     failures: list[dict[str, Any]],
     recent_diffs: list[str],
+    candidate_delta_summaries: Sequence[dict[str, Any]] | None = None,
     task: TaskName = "code",
 ) -> tuple[str, str]:
     boundary = _mutation_boundary(task)
@@ -150,28 +151,34 @@ def build_optimizer_messages(
         "target_failures must be a non-empty JSON array of row numbers or "
         "failure categories from the provided evidence. Only the prompt file may "
         "change; do not change scoring, runtime code, datasets, or post-processing. "
+        "When Candidate Evaluation Delta evidence is present, treat it as the primary "
+        "feedback source; strict-only rows are secondary and infrastructure rows are ignored. "
         f"Selected task: {task}. Allowed changes: {', '.join(boundary['allowed'])}. "
         f"Forbidden changes: {', '.join(boundary['forbidden'])}. "
         "prompt_file must be the complete JavaScript file content starting with module.exports. "
         "Do not return a diff, patch, markdown, or abbreviated excerpt."
     )
-    user = json.dumps(
-        {
-            "task": task,
-            "mutation_boundary": boundary,
-            "current_prompt": current_prompt,
-            "summary": summary,
-            "failure_clusters": failure_clusters,
-            "representative_failures": failures[:30],
-            "target_failure_guidance": (
-                "Set target_failures to row numbers or failure_category values from "
-                "representative_failures and failure_clusters."
-            ),
-            "recent_diffs": recent_diffs[-5:],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    payload = {
+        "task": task,
+        "mutation_boundary": boundary,
+        "current_prompt": current_prompt,
+        "summary": summary,
+        "failure_clusters": failure_clusters,
+        "representative_failures": failures[:30],
+        "target_failure_guidance": (
+            "Set target_failures to row numbers or failure_category values from "
+            "representative_failures and failure_clusters."
+        ),
+        "recent_diffs": recent_diffs[-5:],
+    }
+    if candidate_delta_summaries:
+        payload["candidate_evaluation_delta_summary"] = list(candidate_delta_summaries)[-3:]
+        payload["feedback_priority"] = (
+            "Prioritize candidate_evaluation_delta_summary primary business/type changes. "
+            "strict-only rows are secondary, infrastructure rows are ignored, and "
+            "recent_diffs are auxiliary context only."
+        )
+    user = json.dumps(payload, ensure_ascii=False, indent=2)
     return system, user
 
 

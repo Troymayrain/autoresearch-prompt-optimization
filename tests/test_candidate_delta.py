@@ -1,4 +1,4 @@
-from optimizer.candidate_delta import compare_candidate_delta
+from optimizer.candidate_delta import compare_candidate_delta, summarize_candidate_delta
 from optimizer.dataset import Sample
 from optimizer.evaluation import EvaluationResult
 
@@ -182,3 +182,24 @@ def test_target_failures_effect_summarizes_categories_and_priority_mismatch():
         {"target": "download_error", "outcome": "ignored", "reason": "infrastructure", "row_numbers": [5]},
     ]
     assert delta["target_priority_mismatch"] == ["extra_code", "download_error"]
+
+
+def test_candidate_delta_summary_bounds_actual_values_without_mutating_delta():
+    accepted = [_code_result(2, "ABC", ["MISS"])]
+    candidate = [_code_result(2, "ABC", ["ABCDE12345"])]
+    delta = compare_candidate_delta("code", accepted, candidate)
+
+    summary = summarize_candidate_delta(delta, value_limit=5)
+
+    assert summary["improved_business_rows"] == [
+        {
+            "row_number": 2,
+            "accepted_failure_category": "wrong_code",
+            "candidate_failure_category": "",
+            "business_delta": 1,
+            "strict_delta": 1,
+            "accepted_actual": ["MISS"],
+            "candidate_actual": ["ABCDE..."],
+        }
+    ]
+    assert delta["improved_business_rows"][0]["candidate_actual"] == ["ABCDE12345"]

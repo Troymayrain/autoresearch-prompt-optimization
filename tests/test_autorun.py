@@ -179,6 +179,7 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
         optimizer_model="test",
     )
     seen_accuracies = []
+    seen_payloads = []
     proposals = iter(
         [
             OptimizerProposal("h", "e", "r", ["row 2"], "bad"),
@@ -214,7 +215,9 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
         ]
 
     def fake_call(provider, model, system, user):
-        seen_accuracies.append(json.loads(user)["summary"]["business_accuracy"])
+        payload = json.loads(user)
+        seen_payloads.append(payload)
+        seen_accuracies.append(payload["summary"]["business_accuracy"])
         return next(proposals)
 
     monkeypatch.setattr(autorun, "run_once", fake_run_once)
@@ -224,6 +227,18 @@ async def test_autorun_uses_last_accepted_summary_after_rejected_candidate(tmp_p
 
     assert loaded_tasks == ["code"]
     assert seen_accuracies == [100.0, 100.0]
+    assert "candidate_evaluation_delta_summary" not in seen_payloads[0]
+    assert seen_payloads[1]["candidate_evaluation_delta_summary"][0]["regressed_business_rows"] == [
+        {
+            "row_number": 2,
+            "accepted_failure_category": "",
+            "candidate_failure_category": "wrong_code",
+            "business_delta": -1,
+            "strict_delta": -1,
+            "accepted_actual": ["A"],
+            "candidate_actual": ["B"],
+        }
+    ]
     assert prompt.read_text(encoding="utf-8") == "good"
     delta = json.loads((_latest_session(tmp_path, "code") / "run-001/dev-delta.json").read_text())
     assert delta["regressed_business_rows"][0]["row_number"] == 2

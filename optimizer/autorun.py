@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Sequence
 from zoneinfo import ZoneInfo
 
-from optimizer.candidate_delta import compare_candidate_delta
+from optimizer.candidate_delta import compare_candidate_delta, summarize_candidate_delta
 from optimizer.config import OptimizerConfig
 from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
 from optimizer.evaluation import EvaluationResult, evaluate_samples
@@ -228,6 +228,7 @@ async def main_async(args: argparse.Namespace) -> int:
     experiment_dir = _create_session_dir(cfg.runs_dir, task)
     prompt_path = cfg.prompt_path
     recent_diffs: list[str] = []
+    recent_delta_summaries: list[dict] = []
     plateau_count = 0
 
     validate_prompt_file(prompt_path, cfg.node_binary)
@@ -273,6 +274,7 @@ async def main_async(args: argparse.Namespace) -> int:
             failure_clusters,
             failures,
             recent_diffs,
+            recent_delta_summaries,
             task=task,
         )
         request = {"system": system, "user": user}
@@ -340,6 +342,7 @@ async def main_async(args: argparse.Namespace) -> int:
             proposal.target_failures,
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
+        recent_delta_summaries.append(summarize_candidate_delta(dev_delta))
         dev_accuracy = _accuracy(dev_results, task)
         if dev_accuracy <= best_dev_accuracy:
             recent_diffs.append(

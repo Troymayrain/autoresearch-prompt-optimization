@@ -8,6 +8,17 @@ from optimizer.evaluation import EvaluationResult, INFRASTRUCTURE_FAILURES
 from optimizer.scoring import aggregate_scores, aggregate_type_scores
 
 SECONDARY_CODE_FAILURES = {"extra_code"}
+ROW_GROUP_KEYS = (
+    "improved_business_rows",
+    "regressed_business_rows",
+    "persistent_business_failure_rows",
+    "strict_only_changed_rows",
+    "infra_failure_rows",
+    "improved_type_rows",
+    "regressed_type_rows",
+    "persistent_type_failure_rows",
+    "not_evaluable_rows",
+)
 
 
 def compare_candidate_delta(
@@ -23,6 +34,45 @@ def compare_candidate_delta(
     if target_failures:
         _add_target_failures_effect(delta, target_failures)
     return delta
+
+
+def summarize_candidate_delta(delta: dict, row_limit: int = 5, value_limit: int = 80) -> dict:
+    summary = {
+        "task": delta.get("task"),
+        "primary_metric": delta.get("primary_metric"),
+        "secondary_metric": delta.get("secondary_metric"),
+    }
+    for key in ROW_GROUP_KEYS:
+        rows = delta.get(key)
+        if rows:
+            summary[key] = [_summarize_row(row, value_limit) for row in rows[:row_limit]]
+    for key in ("target_failures_effect", "target_priority_mismatch"):
+        if key in delta:
+            summary[key] = delta[key]
+    return summary
+
+
+def _summarize_row(row: dict, value_limit: int) -> dict:
+    result = {
+        "row_number": row["row_number"],
+        "accepted_failure_category": row["accepted_failure_category"],
+        "candidate_failure_category": row["candidate_failure_category"],
+    }
+    for key in ("business_delta", "strict_delta", "type_delta"):
+        if key in row:
+            result[key] = row[key]
+    result["accepted_actual"] = _bounded_values(row.get("accepted_actual", []), value_limit)
+    result["candidate_actual"] = _bounded_values(row.get("candidate_actual", []), value_limit)
+    return result
+
+
+def _bounded_values(values: Sequence[object], limit: int) -> list[str]:
+    return [_bounded_text(value, limit) for value in values]
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else f"{text[:limit]}..."
 
 
 def _pairs(
