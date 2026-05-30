@@ -28,6 +28,14 @@ _Avoid_: Gift card code evaluation set, metadata evaluation set
 A manually labeled dataset for gift card code recognition optimization. Each row contains `card_image`, `origin`, and `md5_card_number`.
 _Avoid_: Card type evaluation set, metadata evaluation set
 
+**Business Code Match**:
+A code match focused on redeemability. It allows format differences that do not change whether the redeemable code was found.
+_Avoid_: Strict code match, exact text match
+
+**Strict Code Match**:
+A code match focused on output cleanliness and strict character presentation. It is useful for detecting formatting differences, extra output, and strict character issues, but it is not the primary acceptance target for Gift Card Code Recognition Optimization.
+_Avoid_: Business code match, redeemability match
+
 **Regression Evaluation Set**:
 A human-maintained, manually confirmed guard dataset for an optimization goal. It contains cases that should already pass and must not regress when accepting a prompt change. Optimizer runs may read it, but must not automatically add cases to it.
 _Avoid_: Candidate set, full evaluation set, automatically promoted regression set
@@ -39,6 +47,22 @@ _Avoid_: Regression evaluation set, automatically accepted guard case
 **Holdout Evaluation Set**:
 A manually labeled evaluation dataset withheld from routine optimization feedback. It is used to detect overfitting after optimizer behavior has already improved on the normal evaluation set.
 _Avoid_: Regression evaluation set, full evaluation set, routine dev set
+
+**Accepted Prompt**:
+The prompt currently recognized as the baseline by the optimization workflow. A candidate prompt replaces it only after passing the selected task's acceptance conditions.
+_Avoid_: rejected candidate prompt, previous attempt, optimizer proposal
+
+**Candidate Evaluation Delta**:
+The per-row change in evaluation results when a candidate prompt is compared with the current accepted prompt for the same task and evaluation phase. It is feedback evidence for the next optimizer proposal, not an accept gate or a regression guard.
+_Avoid_: Regression evaluation set, regression candidate, global experiment log
+
+**No Business Learning**:
+A state where consecutive candidate prompts produce no Business Code Match improvements on the Dev Evaluation Set. It means the current optimizer feedback is not sufficient for continued automatic progress.
+_Avoid_: Plateau, convergence, no strict improvement
+
+**Optimization Run Session**:
+A single prompt optimization invocation's isolated evidence set for one task. It contains the baseline, candidate evaluations, deltas, and stop outcome for that invocation without merging them into a global experiment log.
+_Avoid_: Global experiment log, run iteration, accepted prompt
 
 **golden_type**:
 The manually labeled answer for card type recognition. Its value repeats `Physics` or `E-codes` once per card image in the same row; mixed-type rows are outside the current scope.

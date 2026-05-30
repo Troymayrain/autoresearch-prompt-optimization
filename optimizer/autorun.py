@@ -4,8 +4,10 @@ import argparse
 import asyncio
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
+from zoneinfo import ZoneInfo
 
 from optimizer.config import OptimizerConfig
 from optimizer.dataset import Sample, TaskName, load_dataset, split_samples
@@ -54,6 +56,41 @@ def _score_summary(
 def _run_dir(base: Path, iteration: int) -> Path:
     name = "run-000-baseline" if iteration == 0 else f"run-{iteration:03d}"
     return base / name
+
+
+def _session_timestamp() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def _latest_path(runs_dir: Path, task: TaskName, session_name: str) -> str:
+    root = runs_dir if not runs_dir.is_absolute() else Path(runs_dir.name)
+    return (root / f"card-ocr-prompt-opt-{task}" / session_name).as_posix()
+
+
+def _create_session_dir(runs_dir: Path, task: TaskName) -> Path:
+    task_root = runs_dir / f"card-ocr-prompt-opt-{task}"
+    stamp = _session_timestamp()
+    for index in range(1, 100):
+        suffix = "" if index == 1 else f"-{index:02d}"
+        session = task_root / f"{stamp}{suffix}"
+        try:
+            session.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            continue
+        (task_root / "latest.json").write_text(
+            json.dumps(
+                {
+                    "task": task,
+                    "session_dir": session.name,
+                    "path": _latest_path(runs_dir, task, session.name),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return session
+    raise RuntimeError(f"could not create run session under {task_root}")
 
 
 async def run_once(
@@ -182,7 +219,7 @@ async def main_async(args: argparse.Namespace) -> int:
     )
     split = split_samples(samples, cfg.dev_sample_size)
     runner = OcrRunner(cfg.node_binary, cfg.ocr_runner_path)
-    experiment_dir = cfg.runs_dir / f"card-ocr-prompt-opt-{task}"
+    experiment_dir = _create_session_dir(cfg.runs_dir, task)
     prompt_path = cfg.prompt_path
     recent_diffs: list[str] = []
     plateau_count = 0

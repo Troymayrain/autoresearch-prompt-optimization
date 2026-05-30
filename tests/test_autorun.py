@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import types
 
 import pytest
@@ -46,6 +47,12 @@ def _xlsx_headers(path):
         wb.close()
 
 
+def _latest_session(tmp_path, task):
+    task_root = tmp_path / "runs" / f"card-ocr-prompt-opt-{task}"
+    latest = json.loads((task_root / "latest.json").read_text())
+    return task_root / latest["session_dir"]
+
+
 def test_stop_when_target_reached():
     assert should_stop(iteration=3, full_accuracy=99.0, target=99.0, plateau_count=0, plateau_window=3, max_iterations=15)
 
@@ -60,6 +67,18 @@ def test_stop_when_max_iterations_reached():
 
 def test_continue_before_limits():
     assert not should_stop(iteration=2, full_accuracy=90.0, target=99.0, plateau_count=1, plateau_window=3, max_iterations=15)
+
+
+def test_create_session_dir_adds_suffix_when_timestamp_collides(tmp_path, monkeypatch):
+    monkeypatch.setattr(autorun, "_session_timestamp", lambda: "2026-05-30_12-00-00")
+    task_root = tmp_path / "runs" / "card-ocr-prompt-opt-code"
+    (task_root / "2026-05-30_12-00-00").mkdir(parents=True)
+
+    session = autorun._create_session_dir(tmp_path / "runs", "code")
+
+    latest = json.loads((task_root / "latest.json").read_text())
+    assert session == task_root / "2026-05-30_12-00-00-02"
+    assert latest["session_dir"] == "2026-05-30_12-00-00-02"
 
 
 def test_accuracy_uses_business_score_only():
@@ -79,6 +98,65 @@ def test_accuracy_uses_type_score_for_type_task():
     )
 
     assert _accuracy([result], task="type") == 100.0
+
+
+@pytest.mark.asyncio
+async def test_autorun_creates_isolated_session_and_latest_pointer(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("valid", encoding="utf-8")
+    task_root = tmp_path / "runs" / "card-ocr-prompt-opt-code"
+    legacy_run = task_root / "run-999"
+    legacy_run.mkdir(parents=True)
+    sample = Sample(2, "a.png", 0, "A", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=0,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda samples, size: DatasetSplit(dev=[sample], full=[sample]))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+
+    async def fake_run_once(samples, runner, concurrency, task):
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": "A"}], "imageStatus": ["ok"]},
+            )
+            for item in samples
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+
+    await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
+
+    latest = json.loads((task_root / "latest.json").read_text())
+    session_dir = latest["session_dir"]
+    session = task_root / session_dir
+    assert re.match(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:-\d{2})?$", session_dir)
+    assert latest == {
+        "task": "code",
+        "session_dir": session_dir,
+        "path": f"runs/card-ocr-prompt-opt-code/{session_dir}",
+    }
+    assert (session / "run-000-baseline" / "summary.json").exists()
+    assert not (task_root / "run-000-baseline" / "summary.json").exists()
+    assert legacy_run.exists()
 
 
 @pytest.mark.asyncio
@@ -214,7 +292,7 @@ async def test_autorun_retries_once_when_optimizer_returns_invalid_prompt(tmp_pa
     assert retry_payload["gate_error"] == "prompt syntax check failed"
     assert prompt.read_text(encoding="utf-8") == "new-valid"
     assert commits == ["prompt(type): improve type OCR accuracy to 100.00%"]
-    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/summary.json").read_text())
+    summary = json.loads((_latest_session(tmp_path, "type") / "run-001/summary.json").read_text())
     assert summary["task"] == "type"
 
 
@@ -271,10 +349,11 @@ async def test_autorun_uses_type_metric_for_keep_commit_and_artifacts(tmp_path, 
     await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="type"))
 
     assert commits == ["prompt(type): improve type OCR accuracy to 100.00%"]
-    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/summary.json").read_text())
+    run_dir = _latest_session(tmp_path, "type") / "run-001"
+    summary = json.loads((run_dir / "summary.json").read_text())
     assert summary["task"] == "type"
     assert summary["type_accuracy"] == 100.0
-    gate = json.loads((tmp_path / "runs/card-ocr-prompt-opt-type/run-001/gate.json").read_text())
+    gate = json.loads((run_dir / "gate.json").read_text())
     assert gate["decision"] == "not_configured"
     assert gate["reason"] == "regression_not_configured"
     assert gate["checks"] == []
@@ -333,8 +412,9 @@ async def test_autorun_records_gate_failure_without_running_dev_or_full(tmp_path
     await autorun.main_async(argparse.Namespace(dataset="dataset.xlsx", task="code"))
 
     assert run_prompts == ["old-valid"]
-    summary = json.loads((tmp_path / "runs/card-ocr-prompt-opt-code/run-001/summary.json").read_text())
-    response = json.loads((tmp_path / "runs/card-ocr-prompt-opt-code/run-001/optimizer-response.json").read_text())
+    run_dir = _latest_session(tmp_path, "code") / "run-001"
+    summary = json.loads((run_dir / "summary.json").read_text())
+    response = json.loads((run_dir / "optimizer-response.json").read_text())
     assert summary["phase"] == "gate_failed"
     assert summary["task"] == "code"
     assert "code task cannot change protected exports" in response["gate_error"]
@@ -509,7 +589,7 @@ async def test_autorun_discards_full_improvement_when_regression_gate_fails(tmp_
         ("main", "candidate"),
         ("regression", "candidate"),
     ]
-    run_dir = tmp_path / "runs/card-ocr-prompt-opt-code/run-001"
+    run_dir = _latest_session(tmp_path, "code") / "run-001"
     gate = json.loads((run_dir / "gate.json").read_text())
     full_summary = json.loads((run_dir / "summary.json").read_text())
     regression_summary = json.loads((run_dir / "regression-summary.json").read_text())
@@ -594,7 +674,7 @@ async def test_autorun_writes_type_regression_failure_artifacts(tmp_path, monkey
         argparse.Namespace(dataset="dataset.xlsx", regression_dataset="regression.xlsx", task="type")
     )
 
-    run_dir = tmp_path / "runs/card-ocr-prompt-opt-type/run-001"
+    run_dir = _latest_session(tmp_path, "type") / "run-001"
     gate = json.loads((run_dir / "gate.json").read_text())
     regression_summary = json.loads((run_dir / "regression-summary.json").read_text())
 
