@@ -176,6 +176,32 @@ def _has_primary_learning(dev_delta: dict) -> bool:
     return bool(dev_delta.get("improved_business_rows") or dev_delta.get("improved_type_rows"))
 
 
+def _metrics_not_regressed(delta: dict) -> bool:
+    return (
+        int(delta.get("primary_metric", {}).get("delta", 0)) >= 0
+        and int(delta.get("secondary_metric", {}).get("delta", 0)) >= 0
+    )
+
+
+def _reviewed_target_resolved(delta: dict) -> bool:
+    summary = delta.get("reviewed_target_effect", {}).get("summary", {})
+    return int(summary.get("resolved", 0)) > 0
+
+
+def _review_guided_dev_passed(delta: dict) -> bool:
+    return _reviewed_target_resolved(delta) and _metrics_not_regressed(delta)
+
+
+def _review_guided_full_passed(delta: dict) -> bool:
+    return _metrics_not_regressed(delta)
+
+
+def _prompt_commit_message(task: TaskName, full_accuracy: float, review_guided: bool) -> str:
+    if review_guided:
+        return f"prompt({task}): resolve reviewed {task} OCR feedback at {full_accuracy:.2f}%"
+    return f"prompt({task}): improve {task} OCR accuracy to {full_accuracy:.2f}%"
+
+
 def _target_failures_for_delta(
     target_failures: Sequence[str],
     feedback_failures: dict,
@@ -429,11 +455,13 @@ async def main_async(args: argparse.Namespace) -> int:
     failed_strategy_memory: list[dict] = []
     no_business_learning_count = 0
     no_business_learning_window = getattr(cfg, "no_business_learning_window", 3)
+    review_feedback_exhausted = False
     plateau_count = 0
 
     validate_prompt_file(prompt_path, cfg.node_binary)
     baseline_prompt = prompt_path.read_text(encoding="utf-8")
     full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
+    accepted_full_results = full_results
     regression_baseline = None
     if regression_samples is not None:
         regression_results = await run_once(regression_samples, runner, cfg.ocr_concurrency, task)
@@ -484,7 +512,8 @@ async def main_async(args: argparse.Namespace) -> int:
             break
         if has_primary_feedback and not focused_group:
             no_business_learning_count = no_business_learning_window
-            last_phase = "focused_feedback_exhausted"
+            last_phase = "review_feedback_exhausted" if review_workbook else "focused_feedback_exhausted"
+            review_feedback_exhausted = bool(review_workbook)
             break
         failures = _read_failures(accepted_dir / "failures.jsonl")
         system, user = build_optimizer_messages(
@@ -576,12 +605,13 @@ async def main_async(args: argparse.Namespace) -> int:
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
         dev_delta_summary = summarize_candidate_delta(dev_delta)
-        if _has_primary_learning(dev_delta):
+        if _has_primary_learning(dev_delta) or (review_workbook and _reviewed_target_resolved(dev_delta)):
             no_business_learning_count = 0
         else:
             no_business_learning_count += 1
         dev_accuracy = _accuracy(dev_results, task)
-        if dev_accuracy <= best_dev_accuracy:
+        dev_passed = _review_guided_dev_passed(dev_delta) if review_workbook else dev_accuracy > best_dev_accuracy
+        if not dev_passed:
             prompt_diff = _write_artifacts(
                 run_dir,
                 "dev",
@@ -621,6 +651,9 @@ async def main_async(args: argparse.Namespace) -> int:
         )
 
         full_results = await run_once(split.full, runner, cfg.ocr_concurrency, task)
+        full_delta = compare_candidate_delta(task, accepted_full_results, full_results)
+        if review_workbook:
+            _write_json(run_dir / "full-delta.json", full_delta)
         full_accuracy = _accuracy(full_results, task)
         recent_diffs.append(
             _write_artifacts(
@@ -637,7 +670,8 @@ async def main_async(args: argparse.Namespace) -> int:
         completed_iteration = iteration
         last_run_dir = run_dir.name
         last_phase = "full"
-        if full_accuracy > best_full_accuracy:
+        full_passed = _review_guided_full_passed(full_delta) if review_workbook else full_accuracy > best_full_accuracy
+        if full_passed:
             if regression_samples is not None and regression_baseline is not None:
                 regression_results = await run_once(
                     regression_samples,
@@ -680,6 +714,7 @@ async def main_async(args: argparse.Namespace) -> int:
                 _write_regression_not_configured(run_dir, task)
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
+            accepted_full_results = full_results
             accepted_dev_results = dev_results
             feedback_failures = write_feedback_failures(run_dir, "dev", accepted_dev_results, task)
             _write_review_feedback_overlay(review_workbook, run_dir, feedback_failures, split.dev)
@@ -687,33 +722,36 @@ async def main_async(args: argparse.Namespace) -> int:
             plateau_count = 0
             commit_prompt(
                 prompt_path,
-                f"prompt({task}): improve {task} OCR accuracy to {full_accuracy:.2f}%",
+                _prompt_commit_message(task, full_accuracy, bool(review_workbook)),
             )
         else:
             recent_delta_summaries.append(dev_delta_summary)
             restore_prompt(prompt_path, current_prompt)
             plateau_count += 1
 
-    reason = stop_reason(
-        completed_iteration,
-        best_full_accuracy,
-        cfg.target_business_accuracy,
-        plateau_count,
-        cfg.plateau_window,
-        cfg.max_iterations,
-        (
-            0
-            if _has_eligible_focused_group(
-                _optimizer_feedback_for_review(
-                    _read_json(accepted_dir / "feedback-failures.json"),
-                    _read_json(accepted_dir / "review-feedback.json") if review_workbook else None,
-                ),
-                focused_attempt_history,
-            )
-            else no_business_learning_count
-        ),
-        no_business_learning_window,
-    )
+    if review_feedback_exhausted:
+        reason = "review_feedback_exhausted"
+    else:
+        reason = stop_reason(
+            completed_iteration,
+            best_full_accuracy,
+            cfg.target_business_accuracy,
+            plateau_count,
+            cfg.plateau_window,
+            cfg.max_iterations,
+            (
+                0
+                if _has_eligible_focused_group(
+                    _optimizer_feedback_for_review(
+                        _read_json(accepted_dir / "feedback-failures.json"),
+                        _read_json(accepted_dir / "review-feedback.json") if review_workbook else None,
+                    ),
+                    focused_attempt_history,
+                )
+                else no_business_learning_count
+            ),
+            no_business_learning_window,
+        )
     _write_stop_artifact(
         experiment_dir,
         task,

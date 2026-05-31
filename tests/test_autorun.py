@@ -641,6 +641,244 @@ async def test_autorun_rejects_review_workbook_for_type_before_loading_dataset(t
 
 
 @pytest.mark.asyncio
+async def test_review_guided_accepts_resolved_target_without_business_accuracy_gain(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    workbook = tmp_path / "feedback-review.xlsx"
+    _review_workbook(
+        workbook,
+        [
+            [
+                "extra_code_output",
+                113,
+                10,
+                "pin.png",
+                "ABC",
+                "ABC\nPIN",
+                "",
+                "extra_code",
+                "extra_code_security_pin",
+                "prompt_fixable",
+                "pin",
+            ]
+        ],
+    )
+    sample = Sample(113, "pin.png", 10, "ABC", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    commits = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda items, size: DatasetSplit(dev=items, full=items))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: commits.append(message))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        actual = [{"number": "ABC"}, {"number": "PIN"}] if prompt.read_text() == "accepted" else [{"number": "ABC"}]
+        return [
+            EvaluationResult.from_ocr_response(item, {"status": 200, "data": actual, "imageStatus": ["ok"]})
+            for item in items
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        autorun,
+        "call_optimizer_llm",
+        lambda provider, model, system, user: OptimizerProposal(
+            "remove pin", "strict cleanup", "low", ["extra_code_security_pin"], "candidate"
+        ),
+    )
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", task="code", review_workbook=str(workbook))
+    )
+
+    assert commits == ["prompt(code): resolve reviewed code OCR feedback at 100.00%"]
+    assert prompt.read_text() == "candidate"
+    session = _latest_session(tmp_path, "code")
+    delta = json.loads((session / "run-001/dev-delta.json").read_text())
+    assert delta["primary_metric"]["delta"] == 0
+    assert delta["reviewed_target_effect"]["summary"]["resolved"] == 1
+
+
+@pytest.mark.asyncio
+async def test_review_guided_rejects_full_business_regression(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    workbook = tmp_path / "feedback-review.xlsx"
+    _review_workbook(
+        workbook,
+        [
+            [
+                "extra_code_output",
+                113,
+                10,
+                "pin.png",
+                "ABC",
+                "ABC\nPIN",
+                "",
+                "extra_code",
+                "extra_code_security_pin",
+                "prompt_fixable",
+                "pin",
+            ]
+        ],
+    )
+    reviewed = Sample(113, "pin.png", 10, "ABC", True)
+    full_only = Sample(114, "clean.png", 0, "XYZ", True)
+    samples = [reviewed, full_only]
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: samples)
+    monkeypatch.setattr(autorun, "split_samples", lambda items, size: DatasetSplit(dev=[reviewed], full=items))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        candidate = prompt.read_text() != "accepted"
+        results = []
+        for item in items:
+            if item.row_number == 113:
+                data = [{"number": "ABC"}] if candidate else [{"number": "ABC"}, {"number": "PIN"}]
+            else:
+                data = [{"number": "BAD"}] if candidate else [{"number": "XYZ"}]
+            results.append(
+                EvaluationResult.from_ocr_response(item, {"status": 200, "data": data, "imageStatus": ["ok"]})
+            )
+        return results
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        autorun,
+        "call_optimizer_llm",
+        lambda provider, model, system, user: OptimizerProposal(
+            "remove pin", "strict cleanup", "low", ["extra_code_security_pin"], "candidate"
+        ),
+    )
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", task="code", review_workbook=str(workbook))
+    )
+
+    assert prompt.read_text() == "accepted"
+    session = _latest_session(tmp_path, "code")
+    full_delta = json.loads((session / "run-001/full-delta.json").read_text())
+    assert full_delta["primary_metric"]["delta"] == -1
+
+
+@pytest.mark.asyncio
+async def test_review_guided_exhaustion_uses_review_feedback_stop_reason(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    workbook = tmp_path / "feedback-review.xlsx"
+    _review_workbook(
+        workbook,
+        [
+            [
+                "extra_code_output",
+                113,
+                10,
+                "pin.png",
+                "ABC",
+                "ABC\nPIN",
+                "",
+                "extra_code",
+                "extra_code_security_pin",
+                "prompt_fixable",
+                "pin",
+            ]
+        ],
+    )
+    sample = Sample(113, "pin.png", 10, "ABC", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=5,
+        target_business_accuracy=101.0,
+        plateau_window=5,
+        no_business_learning_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda items, size: DatasetSplit(dev=items, full=items))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": "ABC"}, {"number": "PIN"}], "imageStatus": ["ok"]},
+            )
+            for item in items
+        ]
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(
+        autorun,
+        "call_optimizer_llm",
+        lambda provider, model, system, user: OptimizerProposal(
+            "ineffective", "unchanged", "low", ["extra_code_security_pin"], "candidate"
+        ),
+    )
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", task="code", review_workbook=str(workbook))
+    )
+
+    stop = json.loads((_latest_session(tmp_path, "code") / "stop.json").read_text())
+    assert stop["reason"] == "review_feedback_exhausted"
+    assert stop["last_phase"] == "review_feedback_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_autorun_records_failed_memory_and_stops_after_primary_groups_exhausted(tmp_path, monkeypatch):
     prompt = tmp_path / "prompts" / "ocr.js"
     prompt.parent.mkdir()
