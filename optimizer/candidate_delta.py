@@ -26,6 +26,7 @@ def compare_candidate_delta(
     accepted: Sequence[EvaluationResult],
     candidate: Sequence[EvaluationResult],
     target_failures: Sequence[str] | None = None,
+    reviewed_targets: Sequence[dict] | None = None,
 ) -> dict:
     if task == "type":
         delta = _type_delta(accepted, candidate)
@@ -33,6 +34,8 @@ def compare_candidate_delta(
         delta = _code_delta(accepted, candidate)
     if target_failures:
         _add_target_failures_effect(delta, target_failures)
+    if reviewed_targets:
+        _add_reviewed_target_effect(delta, reviewed_targets)
     return delta
 
 
@@ -46,7 +49,7 @@ def summarize_candidate_delta(delta: dict, row_limit: int = 5, value_limit: int 
         rows = delta.get(key)
         if rows:
             summary[key] = [_summarize_row(row, value_limit) for row in rows[:row_limit]]
-    for key in ("target_failures_effect", "target_priority_mismatch"):
+    for key in ("target_failures_effect", "target_priority_mismatch", "reviewed_target_effect"):
         if key in delta:
             summary[key] = delta[key]
     return summary
@@ -250,6 +253,21 @@ def _add_target_failures_effect(delta: dict, target_failures: Sequence[str]) -> 
         delta["target_priority_mismatch"] = mismatches
 
 
+def _add_reviewed_target_effect(delta: dict, reviewed_targets: Sequence[dict]) -> None:
+    by_row = {detail["row_number"]: detail for detail in _all_row_details(delta)}
+    effect = {
+        "summary": {"resolved": 0, "unchanged": 0, "regressed": 0, "ignored": 0},
+        "row_targets": [],
+    }
+    for group in reviewed_targets:
+        group_key = str(group.get("key", "")).strip()
+        for row_number in group.get("rows", []):
+            result = _reviewed_row_effect(group_key, int(row_number), by_row)
+            effect["summary"][result["outcome"]] += 1
+            effect["row_targets"].append(result)
+    delta["reviewed_target_effect"] = effect
+
+
 def _all_row_details(delta: dict) -> list[dict]:
     details = []
     for key, value in delta.items():
@@ -316,6 +334,45 @@ def _detail_outcome(detail: dict) -> str:
         return "improved"
     if delta < 0:
         return "regressed"
+    return "unchanged"
+
+
+def _reviewed_row_effect(group_key: str, row_number: int, by_row: dict[int, dict]) -> dict:
+    detail = by_row.get(row_number)
+    if detail is None:
+        return {
+            "row_number": row_number,
+            "review_group_key": group_key,
+            "outcome": "ignored",
+            "reason": "row_not_found",
+            "accepted_failure_category": "",
+            "candidate_failure_category": "",
+            "accepted_actual": [],
+            "candidate_actual": [],
+        }
+
+    outcome = _reviewed_detail_outcome(detail)
+    result = {
+        "row_number": row_number,
+        "review_group_key": group_key,
+        "outcome": outcome,
+        "accepted_failure_category": detail["accepted_failure_category"],
+        "candidate_failure_category": detail["candidate_failure_category"],
+        "accepted_actual": detail.get("accepted_actual", []),
+        "candidate_actual": detail.get("candidate_actual", []),
+    }
+    if outcome == "ignored":
+        result["reason"] = "infrastructure"
+    return result
+
+
+def _reviewed_detail_outcome(detail: dict) -> str:
+    if _detail_has_infra(detail):
+        return "ignored"
+    if detail.get("business_delta", 0) < 0 or detail.get("strict_delta", 0) < 0:
+        return "regressed"
+    if detail["accepted_failure_category"] and not detail["candidate_failure_category"]:
+        return "resolved"
     return "unchanged"
 
 

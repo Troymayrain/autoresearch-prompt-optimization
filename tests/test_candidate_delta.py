@@ -184,6 +184,103 @@ def test_target_failures_effect_summarizes_categories_and_priority_mismatch():
     assert delta["target_priority_mismatch"] == ["extra_code", "download_error"]
 
 
+def test_reviewed_target_effect_reports_resolution_without_redefining_target_failures():
+    accepted = [
+        _code_result(113, "ABC", ["ABC", "PIN"]),
+        _code_result(91, "DEF", ["DEF", "BAR"]),
+        _code_result(324, "F3", ["FB"]),
+        _code_result(411, "GOOD", ["GOOD"]),
+        _code_result(500, "MISS", [], image_status="error-download"),
+    ]
+    candidate = [
+        _code_result(113, "ABC", ["ABC"]),
+        _code_result(91, "DEF", ["DEF", "BAR"]),
+        _code_result(324, "F3", ["F3"]),
+        _code_result(411, "GOOD", ["BAD"]),
+        _code_result(500, "MISS", [], image_status="error-download"),
+    ]
+
+    delta = compare_candidate_delta(
+        "code",
+        accepted,
+        candidate,
+        target_failures=["extra_code"],
+        reviewed_targets=[
+            {"key": "extra_code_security_pin", "rows": [113]},
+            {"key": "extra_code_barcode_receipt_number", "rows": [91]},
+            {"key": "wrong_code_ocr_confusion", "rows": [324, 411, 500, 999]},
+        ],
+    )
+
+    assert delta["target_failures_effect"]["category_targets"] == [
+        {"target": "extra_code", "outcome": "unchanged", "row_numbers": [113, 91]}
+    ]
+    assert delta["reviewed_target_effect"]["summary"] == {
+        "resolved": 2,
+        "unchanged": 1,
+        "regressed": 1,
+        "ignored": 2,
+    }
+    assert delta["reviewed_target_effect"]["row_targets"] == [
+        {
+            "row_number": 113,
+            "review_group_key": "extra_code_security_pin",
+            "outcome": "resolved",
+            "accepted_failure_category": "extra_code",
+            "candidate_failure_category": "",
+            "accepted_actual": ["ABC", "PIN"],
+            "candidate_actual": ["ABC"],
+        },
+        {
+            "row_number": 91,
+            "review_group_key": "extra_code_barcode_receipt_number",
+            "outcome": "unchanged",
+            "accepted_failure_category": "extra_code",
+            "candidate_failure_category": "extra_code",
+            "accepted_actual": ["DEF", "BAR"],
+            "candidate_actual": ["DEF", "BAR"],
+        },
+        {
+            "row_number": 324,
+            "review_group_key": "wrong_code_ocr_confusion",
+            "outcome": "resolved",
+            "accepted_failure_category": "wrong_code",
+            "candidate_failure_category": "",
+            "accepted_actual": ["FB"],
+            "candidate_actual": ["F3"],
+        },
+        {
+            "row_number": 411,
+            "review_group_key": "wrong_code_ocr_confusion",
+            "outcome": "regressed",
+            "accepted_failure_category": "",
+            "candidate_failure_category": "wrong_code",
+            "accepted_actual": ["GOOD"],
+            "candidate_actual": ["BAD"],
+        },
+        {
+            "row_number": 500,
+            "review_group_key": "wrong_code_ocr_confusion",
+            "outcome": "ignored",
+            "reason": "infrastructure",
+            "accepted_failure_category": "download_error",
+            "candidate_failure_category": "download_error",
+            "accepted_actual": [],
+            "candidate_actual": [],
+        },
+        {
+            "row_number": 999,
+            "review_group_key": "wrong_code_ocr_confusion",
+            "outcome": "ignored",
+            "reason": "row_not_found",
+            "accepted_failure_category": "",
+            "candidate_failure_category": "",
+            "accepted_actual": [],
+            "candidate_actual": [],
+        },
+    ]
+
+
 def test_candidate_delta_summary_bounds_actual_values_without_mutating_delta():
     accepted = [_code_result(2, "ABC", ["MISS"])]
     candidate = [_code_result(2, "ABC", ["ABCDE12345"])]
@@ -203,3 +300,23 @@ def test_candidate_delta_summary_bounds_actual_values_without_mutating_delta():
         }
     ]
     assert delta["improved_business_rows"][0]["candidate_actual"] == ["ABCDE12345"]
+
+
+def test_candidate_delta_summary_includes_reviewed_target_effect():
+    accepted = [_code_result(113, "ABC", ["ABC", "PIN"])]
+    candidate = [_code_result(113, "ABC", ["ABC"])]
+    delta = compare_candidate_delta(
+        "code",
+        accepted,
+        candidate,
+        reviewed_targets=[{"key": "extra_code_security_pin", "rows": [113]}],
+    )
+
+    summary = summarize_candidate_delta(delta)
+
+    assert summary["reviewed_target_effect"]["summary"] == {
+        "resolved": 1,
+        "unchanged": 0,
+        "regressed": 0,
+        "ignored": 0,
+    }
