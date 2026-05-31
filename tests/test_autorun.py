@@ -4,7 +4,7 @@ import re
 import types
 
 import pytest
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 import optimizer.autorun as autorun
 from optimizer.autorun import _accuracy, should_stop, stop_reason
@@ -51,6 +51,30 @@ def _latest_session(tmp_path, task):
     task_root = tmp_path / "runs" / f"card-ocr-prompt-opt-{task}"
     latest = json.loads((task_root / "latest.json").read_text())
     return task_root / latest["session_dir"]
+
+
+def _review_workbook(path, rows):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "feedback-review"
+    ws.append(
+        [
+            "group_key",
+            "row_number",
+            "origin",
+            "card_image",
+            "expected",
+            "accepted_actual",
+            "last_candidate_actual",
+            "failure_category",
+            "review_group_key",
+            "review_decision",
+            "review_notes",
+        ]
+    )
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
 
 
 def test_stop_when_target_reached():
@@ -518,6 +542,102 @@ async def test_autorun_uses_dev_feedback_failures_in_optimizer_request(tmp_path,
         }
     ]
     assert delta["target_failures_effect"]["category_targets"] == []
+
+
+@pytest.mark.asyncio
+async def test_autorun_review_workbook_promotes_reviewed_groups_to_focused_feedback(tmp_path, monkeypatch):
+    prompt = tmp_path / "prompts" / "ocr.js"
+    prompt.parent.mkdir()
+    prompt.write_text("accepted", encoding="utf-8")
+    workbook = tmp_path / "feedback-review.xlsx"
+    _review_workbook(
+        workbook,
+        [
+            [
+                "extra_code_output",
+                113,
+                10,
+                "pin.png",
+                "ABC",
+                "ABC\nPIN",
+                "",
+                "extra_code",
+                "extra_code_security_pin",
+                "prompt_fixable",
+                "pin",
+            ]
+        ],
+    )
+    sample = Sample(113, "pin.png", 10, "ABC", True)
+    cfg = types.SimpleNamespace(
+        dev_sample_size=1,
+        ocr_concurrency=1,
+        runs_dir=tmp_path / "runs",
+        prompt_path=prompt,
+        node_binary="node",
+        ocr_runner_path="runner.js",
+        max_iterations=1,
+        target_business_accuracy=101.0,
+        plateau_window=3,
+        optimizer_provider="test",
+        optimizer_model="test",
+    )
+    seen_payloads = []
+
+    monkeypatch.setattr(autorun.OptimizerConfig, "from_env", classmethod(lambda cls: cfg))
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: [sample])
+    monkeypatch.setattr(autorun, "split_samples", lambda items, size: DatasetSplit(dev=items, full=items))
+    monkeypatch.setattr(
+        autorun,
+        "validate_prompt_file",
+        lambda path, node_binary="node", task=None, baseline_source=None: None,
+    )
+    monkeypatch.setattr(autorun, "commit_prompt", lambda path, message: pytest.fail("should not commit"))
+
+    async def fake_run_once(items, runner, concurrency, task):
+        return [
+            EvaluationResult.from_ocr_response(
+                item,
+                {"status": 200, "data": [{"number": "ABC"}, {"number": "PIN"}], "imageStatus": ["ok"]},
+            )
+            for item in items
+        ]
+
+    def fake_call(provider, model, system, user):
+        payload = json.loads(user)
+        seen_payloads.append(payload)
+        return OptimizerProposal("h", "e", "r", [payload["focused_feedback_group"]["key"]], "candidate")
+
+    monkeypatch.setattr(autorun, "run_once", fake_run_once)
+    monkeypatch.setattr(autorun, "call_optimizer_llm", fake_call)
+
+    await autorun.main_async(
+        argparse.Namespace(dataset="dataset.xlsx", task="code", review_workbook=str(workbook))
+    )
+
+    payload = seen_payloads[0]
+    assert payload["focused_feedback_group"] == {"key": "extra_code_security_pin", "rows": [113]}
+    assert payload["optimizer_background_evidence"]["inactive_primary_groups"] == []
+    session = _latest_session(tmp_path, "code")
+    review = json.loads((session / "run-000-baseline/review-feedback.json").read_text())
+    assert review["active_groups"][0]["key"] == "extra_code_security_pin"
+    delta = json.loads((session / "run-001/dev-delta.json").read_text())
+    assert delta["reviewed_target_effect"]["summary"] == {
+        "resolved": 0,
+        "unchanged": 1,
+        "regressed": 0,
+        "ignored": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_autorun_rejects_review_workbook_for_type_before_loading_dataset(tmp_path, monkeypatch):
+    monkeypatch.setattr(autorun, "load_dataset", lambda path, task: pytest.fail("should fail before loading dataset"))
+
+    with pytest.raises(ValueError, match="--review-workbook is only supported for task code"):
+        await autorun.main_async(
+            argparse.Namespace(dataset="dataset.xlsx", task="type", review_workbook=str(tmp_path / "review.xlsx"))
+        )
 
 
 @pytest.mark.asyncio

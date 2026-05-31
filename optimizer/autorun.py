@@ -29,6 +29,7 @@ from optimizer.reporting import (
     write_regression_artifacts,
     write_run_artifacts,
 )
+from optimizer.review_feedback import build_review_feedback, write_review_feedback
 from optimizer.scoring import (
     ScoreSummary,
     TypeScoreSummary,
@@ -248,6 +249,45 @@ def _has_eligible_focused_group(feedback_failures: dict, attempt_history: Sequen
     )
 
 
+def _write_review_feedback_overlay(
+    review_workbook: str | None,
+    run_dir: Path,
+    feedback_failures: dict,
+    dev_samples: Sequence[Sample],
+) -> dict | None:
+    if not review_workbook:
+        return None
+    payload = build_review_feedback(
+        review_workbook,
+        feedback_failures,
+        [sample.row_number for sample in dev_samples],
+    )
+    write_review_feedback(run_dir, payload)
+    return payload
+
+
+def _optimizer_feedback_for_review(feedback_failures: dict, review_feedback: dict | None) -> dict:
+    if not review_feedback:
+        return feedback_failures
+    background = review_feedback.get("background_groups", {})
+    return {
+        "task": feedback_failures.get("task"),
+        "feedback_set": feedback_failures.get("feedback_set"),
+        "review_workbook": review_feedback.get("review_workbook"),
+        "primary_groups": list(review_feedback.get("active_groups", [])),
+        "secondary_groups": list(background.get("primary_groups", []))
+        + list(background.get("secondary_groups", [])),
+    }
+
+
+def _reviewed_targets_for_delta(feedback_failures: dict) -> list[dict]:
+    return [
+        {"key": group["key"], "rows": list(group.get("rows", []))}
+        for group in feedback_failures.get("primary_groups", [])
+        if isinstance(group, dict) and group.get("key") and isinstance(group.get("rows"), list)
+    ]
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -370,6 +410,9 @@ def _write_regression_not_configured(run_dir: Path, task: TaskName) -> None:
 
 async def main_async(args: argparse.Namespace) -> int:
     task = args.task
+    review_workbook = getattr(args, "review_workbook", None)
+    if review_workbook and task != "code":
+        raise ValueError("--review-workbook is only supported for task code")
     cfg = OptimizerConfig.from_env()
     samples = load_dataset(args.dataset, task=task)
     regression_dataset = getattr(args, "regression_dataset", None)
@@ -412,16 +455,19 @@ async def main_async(args: argparse.Namespace) -> int:
         {},
         task,
     )
-    write_feedback_failures(accepted_dir, "dev", accepted_dev_results, task)
+    feedback_failures = write_feedback_failures(accepted_dir, "dev", accepted_dev_results, task)
+    _write_review_feedback_overlay(review_workbook, accepted_dir, feedback_failures, split.dev)
 
     for iteration in range(1, cfg.max_iterations + 1):
         current_prompt = prompt_path.read_text(encoding="utf-8")
         summary = _read_json(accepted_dir / "summary.json")
         failure_clusters = _read_json(accepted_dir / "failure-clusters.json")
         feedback_failures = _read_json(accepted_dir / "feedback-failures.json")
-        has_primary_feedback = bool(feedback_failures.get("primary_groups"))
+        review_feedback = _read_json(accepted_dir / "review-feedback.json") if review_workbook else None
+        optimizer_feedback = _optimizer_feedback_for_review(feedback_failures, review_feedback)
+        has_primary_feedback = bool(optimizer_feedback.get("primary_groups"))
         focused_group = (
-            select_focused_group(feedback_failures, focused_attempt_history)
+            select_focused_group(optimizer_feedback, focused_attempt_history)
             if has_primary_feedback
             else None
         )
@@ -448,7 +494,7 @@ async def main_async(args: argparse.Namespace) -> int:
             failures,
             recent_diffs,
             recent_delta_summaries,
-            feedback_failures=feedback_failures,
+            feedback_failures=optimizer_feedback,
             focused_feedback_group=focused_group,
             failed_strategy_memory=failed_strategy_memory,
             task=task,
@@ -521,11 +567,12 @@ async def main_async(args: argparse.Namespace) -> int:
             task,
             accepted_dev_results,
             dev_results,
-            _target_failures_for_delta(
+            target_failures=_target_failures_for_delta(
                 proposal.target_failures,
-                feedback_failures,
+                optimizer_feedback,
                 focused_group,
             ),
+            reviewed_targets=_reviewed_targets_for_delta(optimizer_feedback) if review_workbook else None,
         )
         _write_json(run_dir / "dev-delta.json", dev_delta)
         dev_delta_summary = summarize_candidate_delta(dev_delta)
@@ -634,7 +681,8 @@ async def main_async(args: argparse.Namespace) -> int:
             best_full_accuracy = full_accuracy
             best_dev_accuracy = dev_accuracy
             accepted_dev_results = dev_results
-            write_feedback_failures(run_dir, "dev", accepted_dev_results, task)
+            feedback_failures = write_feedback_failures(run_dir, "dev", accepted_dev_results, task)
+            _write_review_feedback_overlay(review_workbook, run_dir, feedback_failures, split.dev)
             accepted_dir = run_dir
             plateau_count = 0
             commit_prompt(
@@ -656,7 +704,10 @@ async def main_async(args: argparse.Namespace) -> int:
         (
             0
             if _has_eligible_focused_group(
-                _read_json(accepted_dir / "feedback-failures.json"),
+                _optimizer_feedback_for_review(
+                    _read_json(accepted_dir / "feedback-failures.json"),
+                    _read_json(accepted_dir / "review-feedback.json") if review_workbook else None,
+                ),
                 focused_attempt_history,
             )
             else no_business_learning_count
@@ -688,6 +739,7 @@ def main() -> int:
     parser.add_argument("--task", required=True, choices=("code", "type"))
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--regression-dataset")
+    parser.add_argument("--review-workbook")
     return asyncio.run(main_async(parser.parse_args()))
 
 
