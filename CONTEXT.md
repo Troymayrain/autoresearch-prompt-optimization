@@ -40,6 +40,14 @@ _Avoid_: Full evaluation set, holdout evaluation set, regression evaluation set
 The evaluation set used to choose targetable failures and feedback for automatic optimizer proposals. For Gift Card Code Recognition Optimization, it is the Dev Evaluation Set so target failures can be checked again through Candidate Evaluation Delta.
 _Avoid_: Full evaluation set, holdout evaluation set, regression evaluation set
 
+**Human-Reviewed Optimizer Feedback**:
+An explicit human-reviewed overlay on the Optimizer Feedback Set. It keeps only failures a reviewer marked as prompt-solvable and may promote a Secondary Code Cleanliness Signal into targetable feedback for a Focused Feedback Attempt.
+_Avoid_: automatic dataset mutation, regression evaluation set, unreviewed optimizer feedback
+
+**review_group_key**:
+A human-provided structured group key that can refine or replace the original feedback group for prompt-solvable reviewed rows.
+_Avoid_: review notes parsing, raw failure category, unstructured group inference
+
 **Feedback Failure Group**:
 A group of unresolved Optimizer Feedback Set failures that share the same business error pattern. It describes a rule-level optimization target instead of asking the optimizer to memorize individual rows.
 _Avoid_: Full failure cluster, regression candidate, optimizer background evidence
@@ -68,6 +76,14 @@ _Avoid_: Business code match, redeemability match
 A non-primary signal for output cleanliness, including extra code output and strict formatting issues. It should not drive primary optimizer targets while Business Code Match failures remain.
 _Avoid_: Business code match, targetable business failure, regression evaluation set
 
+**Security PIN Extra Output**:
+A reviewed extra-output pattern where the redeemable gift card code is found, but a separate security PIN is also returned even though the optimization goal only needs the gift card code.
+_Avoid_: redeemable code, code plus PIN output, barcode extra output
+
+**Barcode or Receipt Number Extra Output**:
+A reviewed extra-output pattern where the redeemable gift card code is found, but a barcode number, receipt number, or transaction number is also returned even though it is not a redeemable gift card code.
+_Avoid_: security PIN extra output, redeemable code, serial number target
+
 **Regression Evaluation Set**:
 A human-maintained, manually confirmed guard dataset for an optimization goal. It contains cases that should already pass and must not regress when accepting a prompt change. Optimizer runs may read it, but must not automatically add cases to it.
 _Avoid_: Candidate set, full evaluation set, automatically promoted regression set
@@ -87,6 +103,10 @@ _Avoid_: rejected candidate prompt, previous attempt, optimizer proposal
 **Candidate Evaluation Delta**:
 The per-row change in evaluation results when a candidate prompt is compared with the current accepted prompt for the same task and evaluation phase. It is feedback evidence for the next optimizer proposal, not an accept gate or a regression guard.
 _Avoid_: Regression evaluation set, regression candidate, global experiment log
+
+**Reviewed Target Resolution**:
+A human-reviewed target is resolved when a candidate prompt fixes the reviewed failure pattern without reducing redeemable code recognition. It can justify acceptance in review-guided optimization only when Business Code Match does not regress.
+_Avoid_: business accuracy improvement, strict-only cleanup, automatic secondary optimization
 
 **No Business Learning**:
 A state where consecutive candidate prompts produce no Business Code Match improvements on the Dev Evaluation Set. It means the current optimizer feedback is not sufficient for continued automatic progress.

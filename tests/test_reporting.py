@@ -121,6 +121,7 @@ def test_write_feedback_failures_groups_primary_and_secondary_code_failures(tmp_
         "accepted_actual",
         "last_candidate_actual",
         "failure_category",
+        "review_group_key",
         "review_decision",
         "review_notes",
     )
@@ -136,6 +137,7 @@ def test_write_feedback_failures_groups_primary_and_secondary_code_failures(tmp_
             "wrong_code",
             None,
             None,
+            None,
         ),
         (
             "wrong_code_ocr_confusion",
@@ -146,6 +148,7 @@ def test_write_feedback_failures_groups_primary_and_secondary_code_failures(tmp_
             "F3Z9Z-AZWEJ-XQYAB",
             "F3Z9Z-AZWEJ-XQYA8",
             "wrong_code",
+            None,
             None,
             None,
         ),
@@ -160,6 +163,7 @@ def test_write_feedback_failures_groups_primary_and_secondary_code_failures(tmp_
             "no_card",
             None,
             None,
+            None,
         ),
         (
             "extra_code_output",
@@ -170,6 +174,7 @@ def test_write_feedback_failures_groups_primary_and_secondary_code_failures(tmp_
             "ABC\nEXTRA",
             None,
             "extra_code",
+            None,
             None,
             None,
         ),

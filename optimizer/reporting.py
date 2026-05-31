@@ -257,6 +257,7 @@ def _write_feedback_review_xlsx(
             "accepted_actual",
             "last_candidate_actual",
             "failure_category",
+            "review_group_key",
             "review_decision",
             "review_notes",
         ]
@@ -276,6 +277,7 @@ def _write_feedback_review_xlsx(
                 _actual_text(result, task),
                 _actual_text(last_candidate, task) if last_candidate else "",
                 result.failure_category,
+                "",
                 "",
                 "",
             ]
