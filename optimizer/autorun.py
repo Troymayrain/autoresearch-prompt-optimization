@@ -494,6 +494,11 @@ async def main_async(args: argparse.Namespace) -> int:
         review_feedback = _read_json(accepted_dir / "review-feedback.json") if review_workbook else None
         optimizer_feedback = _optimizer_feedback_for_review(feedback_failures, review_feedback)
         has_primary_feedback = bool(optimizer_feedback.get("primary_groups"))
+        if review_workbook and not has_primary_feedback:
+            no_business_learning_count = no_business_learning_window
+            last_phase = "review_feedback_exhausted"
+            review_feedback_exhausted = True
+            break
         focused_group = (
             select_focused_group(optimizer_feedback, focused_attempt_history)
             if has_primary_feedback
